@@ -16,12 +16,9 @@ struct MapView: View {
                 .ignoresSafeArea()
 
             VStack {
-                StatusCard(
-                    title: viewModel.statusTitle,
-                    message: viewModel.statusDescription,
-                    systemImage: viewModel.statusSystemImage,
-                    tint: viewModel.statusTint
-                )
+                if viewModel.showsLocationOnboarding {
+                    MapLocationOnboarding(viewModel: viewModel)
+                }
 
                 Spacer()
 
@@ -39,14 +36,32 @@ struct MapView: View {
                     .contentShape(.circle)
                     .disabled(!viewModel.canRecenterMap)
                 }
-
-//                MapSummaryPanel(viewModel: viewModel)
             }
             .padding()
         }
-        .task {
-            viewModel.requestLocationAccess()
+    }
+}
+
+private struct MapLocationOnboarding: View {
+    @Bindable var viewModel: MapViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Unlock your map", systemImage: "map.fill")
+                .bold()
+                .foregroundStyle(.primary)
+
+            Text("Allow location access to reveal explored map tiles as you move.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button(viewModel.locationPermissionButtonTitle, systemImage: "location") {
+                viewModel.requestLocationAccess()
+            }
+            .buttonStyle(.borderedProminent)
         }
+        .padding()
+        .background(.regularMaterial, in: .rect(cornerRadius: 20))
     }
 }
 

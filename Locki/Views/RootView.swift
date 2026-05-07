@@ -16,8 +16,12 @@ struct RootView: View {
                 MapView(viewModel: mapViewModel)
             }
 
-            Tab("History", systemImage: "clock") {
-                HistoryView()
+            Tab("Stats", systemImage: "chart.bar") {
+                StatsView()
+            }
+
+            Tab("Journal", systemImage: "book.pages") {
+                JournalView()
             }
 
             Tab("Settings", systemImage: "gearshape") {

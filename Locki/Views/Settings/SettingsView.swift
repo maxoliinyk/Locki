@@ -20,9 +20,6 @@ struct SettingsView: View {
 
                 Section("Tracking") {
                     Label(viewModel.locationPermissionTitle, systemImage: viewModel.locationPermissionSystemImage)
-                    Text(viewModel.locationPermissionDescription)
-                        .foregroundStyle(.secondary)
-
                     Label("Fog of war is planned for later", systemImage: "map")
                 }
             }

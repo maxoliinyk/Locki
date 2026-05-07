@@ -13,15 +13,12 @@ import SwiftUI
 @Observable
 final class MapViewModel: NSObject, CLLocationManagerDelegate {
     var cameraPosition: MapCameraPosition
-    var trackingMode: TrackingMode = .paused
-    var exploredPlacesCount = 0
-    var routeDistance = Measurement(value: 0, unit: UnitLength.kilometers)
     var showsUserLocation = false
     var isCameraFollowingUser = false
     private(set) var locationAuthorizationStatus: CLAuthorizationStatus
 
     @ObservationIgnored private let locationManager = CLLocationManager()
-    @ObservationIgnored private var lastRouteLocation: CLLocation?
+    @ObservationIgnored private let geocoder = CLGeocoder()
 
     override init() {
         cameraPosition = .region(.defaultLockiRegion)
@@ -31,42 +28,18 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
 
         locationManager.delegate = self
         updateLocationState(for: locationManager.authorizationStatus)
-    }
 
-    var statusTitle: String {
-        guard hasLocationAccess else {
-            return locationPermissionTitle
+        Task {
+            await updateFallbackRegionForCurrentLocale()
         }
-
-        return trackingMode.title
-    }
-
-    var statusDescription: String {
-        guard hasLocationAccess else {
-            return locationPermissionDescription
-        }
-
-        return trackingMode.description
-    }
-
-    var statusSystemImage: String {
-        guard hasLocationAccess else {
-            return locationPermissionSystemImage
-        }
-
-        return trackingMode.systemImage
-    }
-
-    var statusTint: Color {
-        guard hasLocationAccess else {
-            return .orange
-        }
-
-        return trackingMode.tint
     }
 
     var canRecenterMap: Bool {
         hasLocationAccess
+    }
+
+    var showsLocationOnboarding: Bool {
+        !hasLocationAccess
     }
 
     var locationPermissionTitle: String {
@@ -81,6 +54,15 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
             "Location not requested"
         @unknown default:
             "Location unavailable"
+        }
+    }
+
+    var locationPermissionButtonTitle: String {
+        switch locationAuthorizationStatus {
+        case .denied, .restricted:
+            "Open Settings"
+        default:
+            "Enable Location"
         }
     }
 
@@ -112,30 +94,12 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    var formattedRouteDistance: String {
-        routeDistance.formatted(.measurement(width: .abbreviated, usage: .road))
-    }
-
-    func startStandardTracking() {
-        startLocationUpdates(mode: .standard)
-    }
-
-    func startRoute() {
-        routeDistance = Measurement(value: 0, unit: UnitLength.kilometers)
-        lastRouteLocation = nil
-        startLocationUpdates(mode: .activeRoute)
-    }
-
-    func pauseTracking() {
-        trackingMode = .paused
-        lastRouteLocation = nil
-        locationManager.stopUpdatingLocation()
-    }
-
     func requestLocationAccess() {
         switch locationManager.authorizationStatus {
         case .notDetermined:
             locationManager.requestWhenInUseAuthorization()
+        case .denied, .restricted:
+            openAppSettings()
         default:
             updateLocationState(for: locationManager.authorizationStatus)
         }
@@ -143,7 +107,6 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
 
     func recenterMap() {
         guard hasLocationAccess else {
-            requestLocationAccess()
             return
         }
 
@@ -152,18 +115,9 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
         cameraPosition = .userLocation(followsHeading: false, fallback: .region(.defaultLockiRegion))
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        Task { @MainActor in
-            updateRouteDistance(with: locations)
-        }
-    }
-
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
             updateLocationState(for: manager.authorizationStatus)
-            if hasLocationAccess, trackingMode != .paused {
-                startLocationUpdates(mode: trackingMode)
-            }
         }
     }
 
@@ -189,45 +143,42 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
         case .denied, .restricted, .notDetermined:
             showsUserLocation = false
             isCameraFollowingUser = false
-            cameraPosition = .region(.defaultLockiRegion)
         @unknown default:
             showsUserLocation = false
             isCameraFollowingUser = false
-            cameraPosition = .region(.defaultLockiRegion)
         }
     }
 
-    private func startLocationUpdates(mode: TrackingMode) {
-        switch locationManager.authorizationStatus {
-        case .notDetermined:
-            trackingMode = mode
-            locationManager.requestWhenInUseAuthorization()
-        case .authorizedAlways, .authorizedWhenInUse:
-            trackingMode = mode
-            showsUserLocation = true
-            locationManager.desiredAccuracy = mode.desiredAccuracy
-            locationManager.distanceFilter = mode.distanceFilter
-            locationManager.startUpdatingLocation()
-            recenterMap()
-        case .denied, .restricted:
-            updateLocationState(for: locationManager.authorizationStatus)
-        @unknown default:
-            updateLocationState(for: locationManager.authorizationStatus)
-        }
-    }
-
-    private func updateRouteDistance(with locations: [CLLocation]) {
-        guard trackingMode == .activeRoute else {
+    private func openAppSettings() {
+        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else {
             return
         }
 
-        for location in locations where location.horizontalAccuracy >= 0 {
-            if let lastRouteLocation {
-                let addedDistance = location.distance(from: lastRouteLocation)
-                routeDistance = routeDistance + Measurement(value: addedDistance, unit: UnitLength.meters)
+        UIApplication.shared.open(settingsURL)
+    }
+
+    private func updateFallbackRegionForCurrentLocale() async {
+        guard !hasLocationAccess,
+              let region = Locale.current.region,
+              let countryName = Locale.current.localizedString(forRegionCode: region.identifier) else {
+            return
+        }
+
+        do {
+            let placemarks = try await geocoder.geocodeAddressString(countryName)
+            guard !hasLocationAccess,
+                  let coordinate = placemarks.first?.location?.coordinate else {
+                return
             }
 
-            lastRouteLocation = location
+            cameraPosition = .region(
+                MKCoordinateRegion(
+                    center: coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 8)
+                )
+            )
+        } catch {
+            cameraPosition = .region(.defaultLockiRegion)
         }
     }
 }
@@ -237,50 +188,4 @@ private extension MKCoordinateRegion {
         center: CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090),
         span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
     )
-}
-
-private extension TrackingMode {
-    var systemImage: String {
-        switch self {
-        case .paused:
-            "pause.circle.fill"
-        case .standard:
-            "location.fill"
-        case .activeRoute:
-            "point.topleft.down.curvedto.point.bottomright.up"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .paused:
-            .secondary
-        case .standard:
-            .blue
-        case .activeRoute:
-            .green
-        }
-    }
-
-    var desiredAccuracy: CLLocationAccuracy {
-        switch self {
-        case .paused:
-            kCLLocationAccuracyThreeKilometers
-        case .standard:
-            kCLLocationAccuracyHundredMeters
-        case .activeRoute:
-            kCLLocationAccuracyBest
-        }
-    }
-
-    var distanceFilter: CLLocationDistance {
-        switch self {
-        case .paused:
-            kCLDistanceFilterNone
-        case .standard:
-            100
-        case .activeRoute:
-            10
-        }
-    }
 }

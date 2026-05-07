@@ -1,5 +1,5 @@
 //
-//  HistoryView.swift
+//  JournalView.swift
 //  Locki
 //
 //  Created by Max Oliinyk on 06.05.2026.
@@ -7,19 +7,19 @@
 
 import SwiftUI
 
-struct HistoryView: View {
+struct JournalView: View {
     var body: some View {
         NavigationStack {
             ContentUnavailableView(
-                "No History Yet",
-                systemImage: "clock.badge.questionmark",
-                description: Text("Your visits and routes will appear here once tracking is added.")
+                "No Journal Yet",
+                systemImage: "book.pages",
+                description: Text("Your private location journal will appear here once passive tracking is added.")
             )
-            .navigationTitle("History")
+            .navigationTitle("Journal")
         }
     }
 }
 
 #Preview {
-    HistoryView()
+    JournalView()
 }
