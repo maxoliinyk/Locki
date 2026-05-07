@@ -8,6 +8,17 @@
 import MapKit
 import SwiftUI
 
+private extension LockiMapStyle {
+    var mapStyle: MapStyle {
+        switch self {
+        case .standard:
+            .standard(elevation: .realistic)
+        case .imagery:
+            .hybrid(elevation: .realistic)
+        }
+    }
+}
+
 struct LockiMap: View {
     @Bindable var viewModel: MapViewModel
 
@@ -17,9 +28,10 @@ struct LockiMap: View {
                 UserAnnotation()
             }
         }
-        .mapStyle(.standard(elevation: .realistic))
+        .mapStyle(viewModel.mapStyle.mapStyle)
         .mapControls {
             MapCompass()
+                .mapControlVisibility(.visible)
             MapPitchToggle()
             MapScaleView()
         }

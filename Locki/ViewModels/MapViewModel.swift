@@ -13,6 +13,7 @@ import SwiftUI
 @Observable
 final class MapViewModel: NSObject, CLLocationManagerDelegate {
     var cameraPosition: MapCameraPosition
+    var mapStyle: LockiMapStyle = .standard
     var showsUserLocation = false
     var isCameraFollowingUser = false
     private(set) var locationAuthorizationStatus: CLAuthorizationStatus
@@ -112,7 +113,10 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
 
         showsUserLocation = true
         isCameraFollowingUser = true
-        cameraPosition = .userLocation(followsHeading: false, fallback: .region(.defaultLockiRegion))
+
+        withAnimation(.easeInOut) {
+            cameraPosition = .userLocation(followsHeading: false, fallback: .region(.defaultLockiRegion))
+        }
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

@@ -13,7 +13,7 @@ struct MapView: View {
     var body: some View {
         ZStack {
             LockiMap(viewModel: viewModel)
-                .ignoresSafeArea()
+//                .ignoresSafeArea()
 
             VStack {
                 if viewModel.showsLocationOnboarding {
@@ -25,20 +25,59 @@ struct MapView: View {
                 HStack {
                     Spacer()
 
-                    Button("Recenter", systemImage: "location.fill") {
-                        viewModel.recenterMap()
-                    }
-                    .labelStyle(.iconOnly)
-                    .font(.title3)
-                    .foregroundStyle(viewModel.canRecenterMap ? .primary : .secondary)
-                    .frame(width: 44, height: 44)
-                    .background(.regularMaterial, in: .circle)
-                    .contentShape(.circle)
-                    .disabled(!viewModel.canRecenterMap)
+                    MapControlStack(viewModel: viewModel)
                 }
             }
             .padding()
         }
+    }
+}
+
+private struct MapControlStack: View {
+    @Bindable var viewModel: MapViewModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Menu {
+                Picker("Map Style", selection: $viewModel.mapStyle) {
+                    ForEach(LockiMapStyle.allCases) { style in
+                        Label(style.title, systemImage: style.systemImage)
+                            .tag(style)
+                    }
+                }
+            } label: {
+                Label("Map Style", systemImage: viewModel.mapStyle.systemImage)
+                    .labelStyle(.iconOnly)
+            }
+            .mapChromeButton()
+
+            Button("Recenter", systemImage: "location.fill") {
+                viewModel.recenterMap()
+            }
+            .labelStyle(.iconOnly)
+            .disabled(!viewModel.canRecenterMap)
+            .mapChromeButton(isEnabled: viewModel.canRecenterMap)
+        }
+    }
+}
+
+private struct MapChromeButton: ViewModifier {
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .font(.title3)
+            .foregroundStyle(isEnabled ? .primary : .secondary)
+            .frame(width: 44, height: 44)
+            .background(.regularMaterial, in: .circle)
+            .contentShape(.circle)
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+    }
+}
+
+private extension View {
+    func mapChromeButton(isEnabled: Bool = true) -> some View {
+        modifier(MapChromeButton(isEnabled: isEnabled))
     }
 }
 
