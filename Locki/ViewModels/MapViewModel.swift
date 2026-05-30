@@ -120,8 +120,9 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
         Task { @MainActor in
-            updateLocationState(for: manager.authorizationStatus)
+            self.updateLocationState(for: status)
         }
     }
 
