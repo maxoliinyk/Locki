@@ -1,5 +1,37 @@
+# macOS
 .DS_Store
-AGENTS.md
+
+# Xcode
 DerivedData/
-xcuserdata/
+build/
 *.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Local agent/private context
+.agent/
+.pi/
+.ai/
+.claude/
+.cursor/
+.codex/
+.antigravitycli/
+AGENTS.md
+AGENTS.MD
+
+# Secrets
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision
+*.provisionprofile
