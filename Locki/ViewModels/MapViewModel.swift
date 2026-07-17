@@ -69,6 +69,8 @@ final class MapViewModel {
         locationTracking.continuousBackgroundTrackingEnabled
     }
 
+    var trackingMode: TrackingMode { locationTracking.trackingMode }
+
     var locationPermissionTitle: String {
         switch locationAuthorizationStatus {
         case .authorizedAlways:
@@ -216,6 +218,10 @@ final class MapViewModel {
 
     func setContinuousBackgroundTrackingEnabled(_ enabled: Bool) {
         locationTracking.setContinuousBackgroundTrackingEnabled(enabled)
+    }
+
+    func setTrackingMode(_ mode: TrackingMode) {
+        locationTracking.setTrackingMode(mode)
     }
 
     func setApplicationIsActive(_ isActive: Bool) {

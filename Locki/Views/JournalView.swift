@@ -172,7 +172,9 @@ struct JournalView: View {
                     title: place?.name ?? "Unclassified place",
                     subtitle: visit.duration.formattedDuration,
                     date: visit.arrivalDate,
-                    warning: visit.departureDate == nil ? "Still here" : nil
+                    warning: visit.departureDate == nil
+                        ? "Still here"
+                        : visit.quality < 0.5 ? "Estimated" : nil
                 )
             }
             .swipeActions {

@@ -24,6 +24,11 @@ struct MapView: View {
         return places.first { $0.id == placeID && !$0.isExcluded }
     }
 
+    private var provisionalPlace: HistoryPlaceRecord? {
+        guard let placeID = historyModel.overview.provisionalStay?.placeID else { return nil }
+        return places.first { $0.id == placeID && !$0.isExcluded }
+    }
+
     var body: some View {
         ZStack {
             LockiMap(viewModel: viewModel)
@@ -37,7 +42,20 @@ struct MapView: View {
 
                 HStack(alignment: .bottom) {
                     if let currentVisit {
-                        MapCurrentStayCard(place: currentPlace, visit: currentVisit)
+                        if let currentPlace {
+                            NavigationLink {
+                                PlaceDetailView(place: currentPlace, historyModel: historyModel)
+                            } label: {
+                                MapCurrentStayCard(place: currentPlace, visit: currentVisit)
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: 300)
+                        } else {
+                            MapCurrentStayCard(place: nil, visit: currentVisit)
+                                .frame(maxWidth: 300)
+                        }
+                    } else if let provisional = historyModel.overview.provisionalStay {
+                        MapProvisionalStayCard(stay: provisional, place: provisionalPlace)
                             .frame(maxWidth: 300)
                     } else if !historyModel.isEnabled, !viewModel.showsLocationOnboarding {
                         MapHistoryOffCard {
@@ -52,6 +70,37 @@ struct MapView: View {
                 }
             }
             .padding()
+        }
+    }
+}
+
+struct MapProvisionalStayCard: View {
+    let stay: ProvisionalStaySnapshot
+    let place: HistoryPlaceRecord?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            if stay.isCredible(at: context.date) {
+                HStack {
+                    Image(systemName: "location.magnifyingglass")
+                        .imageScale(.large)
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(place.map { "Checking \($0.name)" } ?? "Checking this place")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text(max(context.date.timeIntervalSince(stay.startedAt), 0).formattedDuration)
+                            .font(.title2.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    Spacer()
+                }
+                .padding()
+                .background(.regularMaterial, in: .rect(cornerRadius: 20))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(place.map { "Checking stay at \($0.name)" } ?? "Checking this place")
+                .accessibilityValue(max(context.date.timeIntervalSince(stay.startedAt), 0).formattedDuration)
+            }
         }
     }
 }

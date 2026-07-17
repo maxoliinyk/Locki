@@ -5,11 +5,15 @@
 //  Created by Max Oliinyk on 06.05.2026.
 //
 
+import CoreMotion
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Bindable var viewModel: MapViewModel
     @Bindable var historyModel: HistoryModel
+    let motionService: MotionActivityService
+    let trackingHealth: TrackingHealthModel
     @State private var confirmsHistoryDeletion = false
     @State private var confirmsCoverageDeletion = false
     @State private var confirmsAllDeletion = false
@@ -52,17 +56,16 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if !viewModel.locationTracking.hasAlwaysLocationAccess {
+                    if viewModel.showsLocationOnboarding {
                         Button(
-                            viewModel.showsLocationOnboarding
-                                ? viewModel.locationPermissionButtonTitle
-                                : "Enable Background Exploration"
+                            viewModel.locationPermissionButtonTitle
                         ) {
-                            if viewModel.showsLocationOnboarding {
-                                viewModel.requestLocationAccess()
-                            } else {
-                                viewModel.requestBackgroundLocationAccess()
-                            }
+                            viewModel.requestLocationAccess()
+                        }
+                    } else if historyModel.isEnabled,
+                              !viewModel.locationTracking.hasAlwaysLocationAccess {
+                        Button("Enable Always Location") {
+                            viewModel.requestBackgroundLocationAccess()
                         }
                     }
 
@@ -70,16 +73,77 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Toggle(
-                        "Continuous Background Location",
-                        isOn: Binding(
-                            get: { viewModel.continuousBackgroundTrackingEnabled },
-                            set: { viewModel.setContinuousBackgroundTrackingEnabled($0) }
-                        )
+                    if historyModel.isEnabled {
+                        Picker(
+                            "History Detail",
+                            selection: Binding(
+                                get: { viewModel.trackingMode },
+                                set: { viewModel.setTrackingMode($0) }
+                            )
+                        ) {
+                            ForEach(TrackingMode.allCases) { Text($0.title).tag($0) }
+                        }
+                        Text(viewModel.trackingMode.explanation)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section {
+                    readinessRow(
+                        "Always Location",
+                        ready: viewModel.locationTracking.hasAlwaysLocationAccess,
+                        value: viewModel.locationTracking.hasAlwaysLocationAccess ? "On" : "Needed"
                     )
-                    Text("On by default after you enable history. Locki continues recording detailed routes and stays when the app is not visible, uses more battery, and may show the system location indicator. Turning it off keeps foreground, visit, and significant-movement capture, so history may contain gaps.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    readinessRow(
+                        "Precise Location",
+                        ready: viewModel.locationTracking.accuracyAuthorization == .fullAccuracy,
+                        value: viewModel.locationTracking.accuracyAuthorization == .fullAccuracy ? "On" : "Off"
+                    )
+                    readinessRow(
+                        "Background App Refresh",
+                        ready: UIApplication.shared.backgroundRefreshStatus == .restricted
+                            ? nil
+                            : UIApplication.shared.backgroundRefreshStatus == .available,
+                        value: UIApplication.shared.backgroundRefreshStatus.trackingTitle
+                    )
+                    readinessRow(
+                        "Motion & Fitness",
+                        ready: motionService.authorizationStatus == .restricted
+                            ? nil
+                            : motionService.authorizationStatus == .authorized,
+                        value: motionAuthorizationTitle
+                    )
+                    if historyModel.isEnabled,
+                       motionService.authorizationStatus == .notDetermined,
+                       motionService.isAvailable {
+                        Button("Improve Activity Detection", systemImage: "figure.walk.motion") {
+                            historyModel.requestMotionAuthorization()
+                        }
+                    }
+                    if UIApplication.shared.backgroundRefreshStatus == .denied {
+                        Button("Open Background Settings", systemImage: "gear") { openSettings() }
+                    }
+                    if ProcessInfo.processInfo.isLowPowerModeEnabled {
+                        Label("Low Power Mode reduces refresh opportunities", systemImage: "battery.25percent")
+                            .foregroundStyle(.orange)
+                    }
+                    if let title = trackingHealth.lastPassiveEventTitle,
+                       let date = trackingHealth.lastPassiveEventAt {
+                        LabeledContent("Last passive event") {
+                            Text("\(title) · \(date.formatted(.relative(presentation: .named)))")
+                        }
+                    }
+                    if let date = trackingHealth.lastRefreshAt {
+                        LabeledContent("Last refresh") {
+                            Text("\(trackingHealth.lastRefreshSucceeded == true ? "Completed" : "Incomplete") · \(date.formatted(.relative(presentation: .named)))")
+                        }
+                    }
+                    LabeledContent("Monitored places", value: trackingHealth.monitoredPlaceCount.formatted())
+                } header: {
+                    Text("Tracking Readiness")
+                } footer: {
+                    Text("Efficient History is event-driven. iOS chooses when background refreshes run, so visits can appear after the next location event or when Locki is reopened.")
                 }
 
                 Section("Your Data") {
@@ -170,6 +234,34 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var motionAuthorizationTitle: String {
+        switch motionService.authorizationStatus {
+        case .authorized: "On"
+        case .notDetermined: "Optional"
+        case .denied: "Off"
+        case .restricted: "Restricted"
+        @unknown default: "Unavailable"
+        }
+    }
+
+    private func readinessRow(_ title: String, ready: Bool?, value: String) -> some View {
+        LabeledContent {
+            Label(
+                value,
+                systemImage: ready.map { $0 ? "checkmark.circle.fill" : "exclamationmark.circle" }
+                    ?? "minus.circle"
+            )
+            .foregroundStyle(ready.map { $0 ? Color.green : Color.orange } ?? .secondary)
+        } label: {
+            Text(title)
+        }
+    }
+
+    private func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
 }
 
 private struct HistoryRangeDeletionView: View {
@@ -221,8 +313,9 @@ private struct LocationPrivacyView: View {
             }
 
             Section("Background Exploration") {
-                Text("Efficient background exploration is movement-driven and does not keep the blue location indicator active. iOS decides when significant movement updates are delivered.")
-                Text("Detailed Background Tracking is enabled by default after history consent. It improves route and speed detail, uses more battery, and may display the system location indicator.")
+                Text("Efficient History combines system visits, meaningful movement, monitored places, motion activity, and opportunistic background refresh without keeping continuous GPS active.")
+                Text("Detailed History is optional. It improves route and speed detail, uses more battery, and may display the system location indicator.")
+                Text("Background refresh and passive location events are scheduled by iOS and may arrive later. Locki reconciles stays whenever it wakes or is reopened.")
                 Text("Always Location supports eligible system relaunches. Force quitting prevents further capture until Locki is opened again.")
             }
 
@@ -243,5 +336,10 @@ private struct LocationPrivacyView: View {
 #Preview {
     @Previewable @State var viewModel = MapViewModel()
     @Previewable @State var historyModel = HistoryModel()
-    SettingsView(viewModel: viewModel, historyModel: historyModel)
+    SettingsView(
+        viewModel: viewModel,
+        historyModel: historyModel,
+        motionService: MotionActivityService(),
+        trackingHealth: TrackingHealthModel()
+    )
 }

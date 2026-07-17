@@ -7,15 +7,15 @@ Locki is a private fog-of-war exploration map. Location is directly used to clea
 1. Open Map and tap **Enable Exploration**.
 2. Grant **While Using the App** and **Precise Location**.
 3. Use a simulated route or move with the device. Newly visited street-level coverage becomes visible.
-4. Upgrade to **Always Location** in Settings to enable movement-driven background exploration without continuous navigation tracking.
-5. Foreground exploration runs automatically while permission is available.
-6. With Always Location, the default background mode uses significant movement updates without continuous navigation tracking.
-7. **Continuous Background Exploration** is an optional, off-by-default Settings toggle. It provides precise background coverage, uses more battery, and displays the system location indicator.
-8. Automatic Path Matching collects three or more accepted significant-change fixes before asking Apple Maps for walking, cycling, driving, or transit route candidates. A route clears only when the stored anchors support one high-confidence path.
-9. Force-quitting prevents further capture until Locki is opened again.
-10. In Settings, enable **Save Location History**. Locki then retains filtered and quantized route points, infers visits and places, and fills the Journal and Stats tabs.
-11. Detailed Background Tracking is enabled by default after history consent. The user can disable detailed background delivery or disable history without deleting existing data.
-12. The user can delete timeline items, delete all history independently from fog coverage, or prepare a local JSON/GPX export.
+4. In Settings, enable **Save Location History**, then grant **Always Location**, **Precise Location**, and **Motion & Fitness** when requested in that setup context.
+5. **Efficient** is the default history mode. It combines significant-change and visit delivery, monitored place boundaries, motion evidence, opportunistic Background App Refresh, and short one-shot fixes. It does not hold continuous GPS in the background, so routes can contain gaps.
+6. **Detailed** is an optional mode. It retains a background activity session and continuous navigation-quality updates for fuller route and speed detail, uses more battery, and can display the system location indicator.
+7. The Settings readiness section reports Always/Precise permission, Background App Refresh, Motion permission, Low Power Mode impact, and the last passive/refresh result.
+8. A credible stay appears on the map as **Checking this place** after three minutes. Known-place stays confirm after five minutes; unknown stays confirm after ten minutes with location or motion corroboration. Confirmed stays show **You're staying here for…** and can open named place details.
+9. Foreground exploration runs automatically while permission is available. Reduced Accuracy pauses street-level exploration and new nearby-place creation while retaining unambiguous lower-quality known-place evidence.
+10. Automatic Path Matching collects three or more accepted movement fixes before asking Apple Maps for walking, cycling, driving, or transit route candidates. A route clears only when the stored anchors support one high-confidence path.
+11. Background App Refresh and Core Location event delivery are opportunistic. Low Power Mode and system scheduling can reduce update frequency. Force-quitting prevents further capture until Locki is opened again.
+12. The user can disable history without deleting existing data, delete timeline items or all history independently from fog coverage, and prepare a local JSON/GPX export.
 
 ## Privacy and battery behavior
 
@@ -27,6 +27,8 @@ Locki is a private fog-of-war exploration map. Location is directly used to clea
 - Returned route polylines are scored in memory, rasterized into coverage only when confidence is high, and never persisted.
 - Locki does not retain an unfiltered raw GPS callback trail.
 - Place inference and statistics run on device. Apple Maps receives an inferred place center only after the user taps **Identify This Place**.
+- Motion classifications are used only as on-device evidence for staying, walking, cycling, and driving. They are not uploaded or retained as a raw activity diary.
+- Tracking-health diagnostics in UserDefaults contain only status labels, counters, and timestamps—never coordinates, trails, or place names.
 - Coverage, reduced history, and aggregate totals remain in the app's local SwiftData store. Locki has no account or server.
 - Inaccurate, approximate, stale, impossible-speed, and discontinuous samples are rejected.
 - Stationary updates do not trigger repeated persistence writes or redraws.

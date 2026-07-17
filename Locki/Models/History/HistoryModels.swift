@@ -20,7 +20,10 @@ nonisolated enum HistoryGapReason: String, Codable, Hashable, Sendable {
 nonisolated enum HistoryEvent: Hashable, Sendable {
     case sample(HistoryLocationSample)
     case visit(SystemVisitSample)
+    case region(PlaceRegionEvent)
+    case motion(MotionActivitySample)
     case dwellCheck(Date)
+    case reconcile(Date, HistoryReconciliationReason)
     case gap(start: Date, end: Date?, reason: HistoryGapReason)
 }
 
@@ -124,6 +127,7 @@ nonisolated struct HistoryOverview: Hashable, Sendable {
     var gapCount: Int = 0
     var encodedByteCount: Int = 0
     var latestEventAt: Date?
+    var provisionalStay: ProvisionalStaySnapshot?
 }
 
 nonisolated struct HistoryConfiguration: Hashable, Sendable {
@@ -136,6 +140,7 @@ nonisolated struct HistoryConfiguration: Hashable, Sendable {
     let minimumHeadingChangeDegrees: Double
     let tripGapInterval: TimeInterval
     let minimumVisitDuration: TimeInterval
+    let knownPlaceVisitDuration: TimeInterval
     let baseVisitRadiusMeters: Double
     let maximumVisitRadiusMeters: Double
     let visitExitDuration: TimeInterval
@@ -153,6 +158,7 @@ nonisolated struct HistoryConfiguration: Hashable, Sendable {
         minimumHeadingChangeDegrees: 20,
         tripGapInterval: 10 * 60,
         minimumVisitDuration: 10 * 60,
+        knownPlaceVisitDuration: 5 * 60,
         baseVisitRadiusMeters: 35,
         maximumVisitRadiusMeters: 100,
         visitExitDuration: 5 * 60,

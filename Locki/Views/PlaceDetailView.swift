@@ -158,6 +158,11 @@ struct PlaceDetailView: View {
                 LabeledContent("Longest stay", value: analytics.longestDuration.formattedDuration)
                 if let first = analytics.firstVisitAt { LabeledContent("First visit") { Text(first, format: .dateTime) } }
                 if let last = analytics.lastVisitAt { LabeledContent("Latest visit") { Text(last, format: .dateTime) } }
+                if visits.contains(where: { $0.quality < 0.5 }) {
+                    Label("Some stay time is estimated from lower-accuracy evidence", systemImage: "approximately")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if !analytics.trend.isEmpty {
@@ -209,6 +214,11 @@ struct PlaceDetailView: View {
                                 Text(visit.duration.formattedDuration)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if visit.quality < 0.5 {
+                                    Text("Estimated")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
                             }
                             Spacer()
                             Menu("Visit corrections", systemImage: "ellipsis.circle") {

@@ -26,12 +26,13 @@ nonisolated enum LocationTrackingState: Hashable, Sendable {
 
 @MainActor
 @Observable
-final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
+final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneShotLocationProviding {
     private(set) var state: LocationTrackingState
     private(set) var authorizationStatus: CLAuthorizationStatus
     private(set) var accuracyAuthorization: CLAccuracyAuthorization
     private(set) var continuousBackgroundTrackingEnabled: Bool
     private(set) var historyTrackingEnabled: Bool
+    private(set) var trackingMode: TrackingMode
 
     @ObservationIgnored var deltaHandler: ((CoverageDelta) -> Void)?
     @ObservationIgnored var pathAnchorHandler: ((PathAnchor) -> Void)?
@@ -48,11 +49,19 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private var historyGapStartedAt: Date?
     @ObservationIgnored private var historyGapReason: HistoryGapReason?
     @ObservationIgnored private var historyServiceSession: CLServiceSession?
+    @ObservationIgnored private var backgroundActivitySession: CLBackgroundActivitySession?
+    @ObservationIgnored private var liveUpdateTask: Task<Void, Never>?
+    @ObservationIgnored private var oneShotRequests: [UUID: OneShotRequest] = [:]
 
     private static let fullAccuracyPurposeKey = "ExplorationPrecision"
     private static let continuousBackgroundTrackingKey = "exploration.continuousBackgroundTracking"
+    private static let trackingModeKey = "history.trackingMode"
     private static let historyTrackingKey = "history.enabled"
-    private static let historyBackgroundDefaultAppliedKey = "history.backgroundDefaultApplied"
+
+    private struct OneShotRequest {
+        let continuation: CheckedContinuation<Bool, Never>
+        let timeoutTask: Task<Void, Never>
+    }
 
     init(
         locationManager: CLLocationManager = CLLocationManager(),
@@ -62,9 +71,13 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
         self.engine = engine
         authorizationStatus = locationManager.authorizationStatus
         accuracyAuthorization = locationManager.accuracyAuthorization
-        continuousBackgroundTrackingEnabled = UserDefaults.standard.bool(
-            forKey: Self.continuousBackgroundTrackingKey
+        let legacyContinuous = UserDefaults.standard.bool(forKey: Self.continuousBackgroundTrackingKey)
+        let resolvedMode = Self.resolvedTrackingMode(
+            storedMode: UserDefaults.standard.string(forKey: Self.trackingModeKey),
+            legacyContinuous: legacyContinuous
         )
+        trackingMode = resolvedMode
+        continuousBackgroundTrackingEnabled = resolvedMode == .detailed
         historyTrackingEnabled = UserDefaults.standard.bool(forKey: Self.historyTrackingKey)
         state = locationManager.authorizationStatus == .notDetermined
             ? .waitingForPermission
@@ -76,6 +89,14 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
         locationManager.distanceFilter = 10
         locationManager.activityType = .otherNavigation
         locationManager.pausesLocationUpdatesAutomatically = true
+    }
+
+    nonisolated static func resolvedTrackingMode(
+        storedMode: String?,
+        legacyContinuous: Bool
+    ) -> TrackingMode {
+        storedMode.flatMap(TrackingMode.init(rawValue:))
+            ?? (legacyContinuous ? .detailed : .efficient)
     }
 
     var hasLocationAccess: Bool {
@@ -150,10 +171,16 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
     }
 
     func setContinuousBackgroundTrackingEnabled(_ enabled: Bool) {
-        continuousBackgroundTrackingEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.continuousBackgroundTrackingKey)
+        setTrackingMode(enabled ? .detailed : .efficient)
+    }
 
-        if enabled, authorizationStatus != .authorizedAlways {
+    func setTrackingMode(_ mode: TrackingMode) {
+        trackingMode = mode
+        continuousBackgroundTrackingEnabled = mode == .detailed
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.trackingModeKey)
+        UserDefaults.standard.set(mode == .detailed, forKey: Self.continuousBackgroundTrackingKey)
+
+        if mode == .detailed, authorizationStatus != .authorizedAlways {
             requestAlwaysLocationAccess()
         }
         updateLocationDelivery()
@@ -163,19 +190,19 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
         historyTrackingEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.historyTrackingKey)
         if enabled {
-            historyServiceSession = CLServiceSession(
-                authorization: .always,
-                fullAccuracyPurposeKey: Self.fullAccuracyPurposeKey
-            )
-            if !UserDefaults.standard.bool(forKey: Self.historyBackgroundDefaultAppliedKey) {
-                UserDefaults.standard.set(true, forKey: Self.historyBackgroundDefaultAppliedKey)
-                setContinuousBackgroundTrackingEnabled(true)
+            if historyServiceSession == nil {
+                historyServiceSession = CLServiceSession(
+                    authorization: .always,
+                    fullAccuracyPurposeKey: Self.fullAccuracyPurposeKey
+                )
             }
             startVisitMonitoring()
+            beginLocationUpdates()
         } else {
             historyServiceSession?.invalidate()
             historyServiceSession = nil
             stopVisitMonitoring()
+            stopSignificantChangeMonitoring()
             beginHistoryGap(reason: .disabled)
         }
         updateLocationDelivery()
@@ -214,7 +241,8 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
-            consume(locations)
+            let accepted = consume(locations)
+            if accepted { finishAllOneShotRequests(success: true) }
         }
     }
 
@@ -271,6 +299,12 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
     private func beginLocationUpdates() {
         guard hasLocationAccess else { return }
 
+        if historyTrackingEnabled, !significantChangeMonitoringRunning {
+            locationManager.startMonitoringSignificantLocationChanges()
+            significantChangeMonitoringRunning = true
+        }
+        if historyTrackingEnabled { startVisitMonitoring() }
+
         accuracyAuthorization = locationManager.accuracyAuthorization
         guard accuracyAuthorization == .fullAccuracy else {
             beginHistoryGap(reason: .reducedAccuracy)
@@ -279,12 +313,6 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
             return
         }
         endHistoryGapIfNeeded()
-
-        if !significantChangeMonitoringRunning {
-            locationManager.startMonitoringSignificantLocationChanges()
-            significantChangeMonitoringRunning = true
-        }
-        if historyTrackingEnabled { startVisitMonitoring() }
 
         updateLocationDelivery()
         state = .active
@@ -297,33 +325,35 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
 
         let shouldRunStandardUpdates = applicationIsActive || continuousBackgroundTrackingEnabled
         if shouldRunStandardUpdates, !standardUpdatesRunning {
-            locationManager.allowsBackgroundLocationUpdates = continuousBackgroundTrackingEnabled
-            locationManager.showsBackgroundLocationIndicator = continuousBackgroundTrackingEnabled
-            locationManager.startUpdatingLocation()
+            startLiveUpdates()
             standardUpdatesRunning = true
         } else if !shouldRunStandardUpdates, standardUpdatesRunning {
             stopStandardUpdates()
-        } else if standardUpdatesRunning {
-            locationManager.allowsBackgroundLocationUpdates = continuousBackgroundTrackingEnabled
-            locationManager.showsBackgroundLocationIndicator = continuousBackgroundTrackingEnabled
+        }
+        if continuousBackgroundTrackingEnabled, historyTrackingEnabled {
+            if backgroundActivitySession == nil { backgroundActivitySession = CLBackgroundActivitySession() }
+        } else {
+            backgroundActivitySession?.invalidate()
+            backgroundActivitySession = nil
         }
     }
 
     private func stopLocationUpdates() {
         stopStandardUpdates()
-        if significantChangeMonitoringRunning {
-            locationManager.stopMonitoringSignificantLocationChanges()
-            significantChangeMonitoringRunning = false
-        }
+        backgroundActivitySession?.invalidate()
+        backgroundActivitySession = nil
+        stopSignificantChangeMonitoring()
         stopVisitMonitoring()
         locationManager.allowsBackgroundLocationUpdates = false
         locationManager.showsBackgroundLocationIndicator = false
         previousSample = nil
+        finishAllOneShotRequests(success: false)
     }
 
     private func stopStandardUpdates() {
         if standardUpdatesRunning {
-            locationManager.stopUpdatingLocation()
+            liveUpdateTask?.cancel()
+            liveUpdateTask = nil
             standardUpdatesRunning = false
         }
         locationManager.allowsBackgroundLocationUpdates = false
@@ -331,18 +361,21 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
         previousSample = nil
     }
 
-    private func consume(_ locations: [CLLocation]) {
+    @discardableResult
+    private func consume(_ locations: [CLLocation]) -> Bool {
         guard accuracyAuthorization == .fullAccuracy else {
             state = .requiresPreciseLocation
-            return
+            return false
         }
 
         let isSignificantChangeDelivery = !standardUpdatesRunning
+        var acceptedAny = false
         for location in locations.sorted(by: { $0.timestamp < $1.timestamp }) {
             let sample = ExplorationLocationSample(location: location, hasPreciseAccuracy: true)
             let delta = engine.process(sample: sample, previous: previousSample)
 
             if engine.acceptedSample(sample) {
+                acceptedAny = true
                 endHistoryGapIfNeeded()
                 previousSample = sample
                 state = .active
@@ -364,6 +397,59 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
                 deltaHandler?(delta)
             }
         }
+        return acceptedAny
+    }
+
+    func requestOneShotLocation(timeout: Duration = .seconds(12)) async -> Bool {
+        guard hasAlwaysLocationAccess else { return false }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let timeoutTask = Task { [weak self] in
+                    do { try await Task.sleep(for: timeout) }
+                    catch { return }
+                    self?.finishOneShotRequest(id: id, success: false)
+                }
+                oneShotRequests[id] = OneShotRequest(continuation: continuation, timeoutTask: timeoutTask)
+                locationManager.requestLocation()
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finishOneShotRequest(id: id, success: false) }
+        }
+    }
+
+    private func startLiveUpdates() {
+        liveUpdateTask?.cancel()
+        liveUpdateTask = Task { [weak self] in
+            do {
+                for try await update in CLLocationUpdate.liveUpdates(.otherNavigation) {
+                    guard let self, !Task.isCancelled else { return }
+                    if update.authorizationDenied || update.authorizationDeniedGlobally {
+                        state = .unavailable(.authorizationDenied)
+                        continue
+                    }
+                    if update.stationary {
+                        state = .stationary
+                        if historyTrackingEnabled { historyEventHandler?(.dwellCheck(.now)) }
+                    }
+                    if let location = update.location { consume([location]) }
+                }
+            } catch is CancellationError {
+                // Expected when foreground or detailed tracking ends.
+            } catch {
+                self?.state = .failed
+            }
+        }
+    }
+
+    private func finishOneShotRequest(id: UUID, success: Bool) {
+        guard let request = oneShotRequests.removeValue(forKey: id) else { return }
+        request.timeoutTask.cancel()
+        request.continuation.resume(returning: success)
+    }
+
+    private func finishAllOneShotRequests(success: Bool) {
+        for id in Array(oneShotRequests.keys) { finishOneShotRequest(id: id, success: success) }
     }
 
     private func startVisitMonitoring() {
@@ -376,6 +462,12 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
         guard visitMonitoringRunning else { return }
         locationManager.stopMonitoringVisits()
         visitMonitoringRunning = false
+    }
+
+    private func stopSignificantChangeMonitoring() {
+        guard significantChangeMonitoringRunning else { return }
+        locationManager.stopMonitoringSignificantLocationChanges()
+        significantChangeMonitoringRunning = false
     }
 
     private func beginHistoryGap(reason: HistoryGapReason) {

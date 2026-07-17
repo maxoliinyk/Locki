@@ -19,7 +19,9 @@ actor HistoryStore {
     private let reducer = TrajectoryReducer()
     private let visitEngine = VisitInferenceEngine()
     private let routeEngine = RouteSimilarityEngine()
-    private let currentInferenceVersion = 3
+    private let currentInferenceVersion = 4
+    private var latestMotion: MotionActivitySample?
+    private var stationarySince: Date?
 
     func prepare() throws -> HistoryOverview {
         let metadata = try metadata()
@@ -58,7 +60,13 @@ actor HistoryStore {
             try ingest(sample, now: now)
         case .visit(let visit):
             try ingest(visit)
+        case .region(let event):
+            try ingest(event)
+        case .motion(let activity):
+            try ingest(activity)
         case .dwellCheck(let date):
+            try confirmDwell(at: date)
+        case .reconcile(let date, _):
             try confirmDwell(at: date)
         case .gap(let start, let end, let reason):
             let metadata = try metadata()
@@ -92,8 +100,49 @@ actor HistoryStore {
             trackedDayCount: days.count,
             gapCount: gaps.count,
             encodedByteCount: metadata.encodedByteCount,
-            latestEventAt: metadata.lastProcessedAt
+            latestEventAt: metadata.lastProcessedAt,
+            provisionalStay: try provisionalStay(metadata: metadata)
         )
+    }
+
+    func monitoredPlaceCandidates() throws -> [MonitoredPlaceCandidate] {
+        let metadata = try metadata()
+        var candidates = try modelContext.fetch(FetchDescriptor<HistoryPlaceRecord>())
+            .filter { !$0.isExcluded }
+            .map {
+                MonitoredPlaceCandidate(
+                    placeID: $0.id,
+                    coordinate: GeoCoordinate(latitude: $0.latitude, longitude: $0.longitude),
+                    radiusMeters: $0.radiusMeters,
+                    isCandidate: false,
+                    isFavorite: $0.isFavorite,
+                    isUserNamed: $0.labelSourceRawValue == "user",
+                    visitCount: $0.visitCount,
+                    totalDuration: $0.totalDuration,
+                    lastVisitAt: $0.lastVisitAt
+                )
+            }
+        if metadata.openVisitID == nil,
+           let latitude = metadata.candidateLatitude,
+           let longitude = metadata.candidateLongitude {
+            candidates.append(
+                MonitoredPlaceCandidate(
+                    placeID: try matchingPlace(
+                        coordinate: GeoCoordinate(latitude: latitude, longitude: longitude),
+                        accuracy: metadata.candidateAccuracyMeters ?? configuration.baseVisitRadiusMeters
+                    )?.id,
+                    coordinate: GeoCoordinate(latitude: latitude, longitude: longitude),
+                    radiusMeters: metadata.candidateAccuracyMeters ?? configuration.baseVisitRadiusMeters,
+                    isCandidate: true,
+                    isFavorite: false,
+                    isUserNamed: false,
+                    visitCount: 0,
+                    totalDuration: 0,
+                    lastVisitAt: metadata.candidateStartedAt
+                )
+            )
+        }
+        return candidates
     }
 
     func deleteTrip(id: UUID) throws -> HistoryOverview {
@@ -426,27 +475,93 @@ actor HistoryStore {
             coordinate: systemVisit.coordinate,
             radius: visitEngine.radius(forAccuracy: systemVisit.horizontalAccuracyMeters)
         )
+        let visit: HistoryVisitRecord
         if let existing = try modelContext.fetch(FetchDescriptor<HistoryVisitRecord>()).first(where: {
             $0.placeID == place.id && abs($0.arrivalDate.timeIntervalSince(systemVisit.arrivalDate)) < 120
         }) {
             if let departure = systemVisit.departureDate { existing.departureDate = departure }
+            visit = existing
         } else {
-            modelContext.insert(
-                HistoryVisitRecord(
-                    placeID: place.id,
-                    arrivalDate: systemVisit.arrivalDate,
-                    departureDate: systemVisit.departureDate,
-                    timeZoneIdentifier: systemVisit.timeZoneIdentifier,
-                    latitude: systemVisit.coordinate.latitude,
-                    longitude: systemVisit.coordinate.longitude,
-                    radiusMeters: visitEngine.radius(forAccuracy: systemVisit.horizontalAccuracyMeters),
-                    sourceRawValue: "system",
-                    quality: max(0, 1 - systemVisit.horizontalAccuracyMeters / 250)
-                )
+            visit = HistoryVisitRecord(
+                placeID: place.id,
+                arrivalDate: systemVisit.arrivalDate,
+                departureDate: systemVisit.departureDate,
+                timeZoneIdentifier: systemVisit.timeZoneIdentifier,
+                latitude: systemVisit.coordinate.latitude,
+                longitude: systemVisit.coordinate.longitude,
+                radiusMeters: visitEngine.radius(forAccuracy: systemVisit.horizontalAccuracyMeters),
+                sourceRawValue: "system",
+                quality: max(0, 1 - systemVisit.horizontalAccuracyMeters / 250)
             )
+            modelContext.insert(visit)
+        }
+        if systemVisit.departureDate == nil {
+            if let openID = metadata.openVisitID, openID != visit.id {
+                try closeOpenVisit(metadata: metadata, at: systemVisit.arrivalDate)
+            }
+            metadata.openVisitID = visit.id
+            resetCandidate(metadata)
+            try closeOpenTrip(metadata: metadata, at: systemVisit.arrivalDate, destinationPlaceID: place.id)
+        } else {
+            if metadata.openVisitID == visit.id { metadata.openVisitID = nil }
+            metadata.latestPlaceID = place.id
         }
         try refreshPlace(id: place.id)
         try rebuildDailySummaries()
+    }
+
+    private func ingest(_ event: PlaceRegionEvent) throws {
+        let metadata = try metadata()
+        guard metadata.enabledAt != nil, event.coordinate.isValid else { return }
+
+        switch event.state {
+        case .inside:
+            if let openID = metadata.openVisitID,
+               let openVisit = try modelContext.fetch(FetchDescriptor<HistoryVisitRecord>())
+                .first(where: { $0.id == openID }),
+               event.placeID == openVisit.placeID {
+                resetCandidate(metadata)
+                return
+            }
+            metadata.candidateStartedAt = min(metadata.candidateStartedAt ?? event.date, event.date)
+            metadata.candidateLatitude = event.coordinate.latitude
+            metadata.candidateLongitude = event.coordinate.longitude
+            metadata.candidateAccuracyMeters = min(max(event.radiusMeters / 2, 20), 100)
+            metadata.candidateCount = max(metadata.candidateCount, 1)
+            try confirmDwell(at: event.date)
+        case .outside:
+            if let openID = metadata.openVisitID,
+               let visit = try modelContext.fetch(FetchDescriptor<HistoryVisitRecord>())
+                .first(where: { $0.id == openID }),
+               event.placeID == nil || event.placeID == visit.placeID {
+                try closeOpenVisit(metadata: metadata, at: event.date)
+            } else if let latitude = metadata.candidateLatitude,
+                      let longitude = metadata.candidateLongitude,
+                      GeoCoordinate(latitude: latitude, longitude: longitude)
+                        .distance(to: event.coordinate) <= max(event.radiusMeters, 100) {
+                resetCandidate(metadata)
+            }
+        case .unknown:
+            break
+        }
+    }
+
+    private func ingest(_ activity: MotionActivitySample) throws {
+        guard activity.confidence >= 1 else { return }
+        if let latestMotion, activity.startedAt < latestMotion.startedAt { return }
+        latestMotion = activity
+        if activity.isReliableStationary {
+            stationarySince = stationarySince.map { min($0, activity.startedAt) } ?? activity.startedAt
+            try confirmDwell(at: activity.startedAt)
+        } else if activity.isReliableMovement {
+            stationarySince = nil
+            let metadata = try metadata()
+            if metadata.openVisitID == nil {
+                resetCandidate(metadata)
+            } else if metadata.candidateStartedAt == nil {
+                metadata.candidateStartedAt = activity.startedAt
+            }
+        }
     }
 
     private func ingestLate(_ sample: HistoryLocationSample) throws {
@@ -539,7 +654,8 @@ actor HistoryStore {
             return false
         }
 
-        let isStationary = (sample.speedMetersPerSecond ?? 0) <= 0.8
+        let isStationary = sample.speedMetersPerSecond.map { $0 <= 0.8 }
+            ?? (latestMotion?.isReliableStationary == true)
         guard isStationary else {
             resetCandidate(metadata)
             return false
@@ -563,7 +679,9 @@ actor HistoryStore {
             metadata.candidateAccuracyMeters = max(metadata.candidateAccuracyMeters ?? 0, sample.horizontalAccuracyMeters)
             metadata.candidateCount += 1
 
-            guard visitEngine.qualifies(startedAt: startedAt, current: sample.timestamp) else { return false }
+            guard try candidateQualifies(metadata: metadata, startedAt: startedAt, at: sample.timestamp) else {
+                return false
+            }
             return try openCandidateVisit(metadata: metadata, fallbackSample: sample)
         }
 
@@ -577,9 +695,35 @@ actor HistoryStore {
               metadata.openVisitID == nil,
               let startedAt = metadata.candidateStartedAt,
               date >= startedAt,
-              visitEngine.qualifies(startedAt: startedAt, current: date),
-              (metadata.lastSpeedMetersPerSecond ?? 0) <= 0.8 else { return }
+              try candidateQualifies(metadata: metadata, startedAt: startedAt, at: date) else { return }
         _ = try openCandidateVisit(metadata: metadata)
+    }
+
+    private func candidateQualifies(
+        metadata: HistoryMetadataRecord,
+        startedAt: Date,
+        at date: Date
+    ) throws -> Bool {
+        guard let latitude = metadata.candidateLatitude,
+              let longitude = metadata.candidateLongitude else { return false }
+        let coordinate = GeoCoordinate(latitude: latitude, longitude: longitude)
+        let knownPlace = try matchingPlace(
+            coordinate: coordinate,
+            accuracy: metadata.candidateAccuracyMeters ?? configuration.baseVisitRadiusMeters
+        )
+        let requiredDuration = knownPlace == nil
+            ? configuration.minimumVisitDuration
+            : configuration.knownPlaceVisitDuration
+        guard date.timeIntervalSince(startedAt) >= requiredDuration else { return false }
+
+        let stationaryMotionSupportsCandidate = latestMotion?.isReliableStationary == true
+            && (stationarySince ?? latestMotion?.startedAt ?? date) <= date
+        let hasCorroboration = metadata.candidateCount >= 2 || stationaryMotionSupportsCandidate
+        guard hasCorroboration else { return false }
+
+        if let speed = metadata.lastSpeedMetersPerSecond, speed > 0.8,
+           !stationaryMotionSupportsCandidate { return false }
+        return true
     }
 
     private func openCandidateVisit(
@@ -975,6 +1119,24 @@ actor HistoryStore {
         let record = HistoryMetadataRecord()
         modelContext.insert(record)
         return record
+    }
+
+    private func provisionalStay(metadata: HistoryMetadataRecord) throws -> ProvisionalStaySnapshot? {
+        guard metadata.openVisitID == nil,
+              let startedAt = metadata.candidateStartedAt,
+              let latitude = metadata.candidateLatitude,
+              let longitude = metadata.candidateLongitude else { return nil }
+        let matched = try matchingPlace(
+            coordinate: GeoCoordinate(latitude: latitude, longitude: longitude),
+            accuracy: metadata.candidateAccuracyMeters ?? configuration.baseVisitRadiusMeters
+        )
+        return ProvisionalStaySnapshot(
+            startedAt: startedAt,
+            placeID: matched?.id,
+            placeName: matched?.name,
+            evidenceCount: metadata.candidateCount,
+            hasStationaryMotion: latestMotion?.isReliableStationary == true
+        )
     }
 
     private func repairOrphanedVisits(metadata: HistoryMetadataRecord) throws {

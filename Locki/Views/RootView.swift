@@ -9,15 +9,17 @@ import SwiftData
 import SwiftUI
 
 struct RootView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var mapViewModel = MapViewModel()
-    @State private var historyModel = HistoryModel()
+    let runtime: AppRuntime
+
+    private var mapViewModel: MapViewModel { runtime.mapViewModel }
+    private var historyModel: HistoryModel { runtime.historyModel }
 
     var body: some View {
         TabView {
             Tab("Map", systemImage: "map") {
-                MapView(viewModel: mapViewModel, historyModel: historyModel)
+                NavigationStack {
+                    MapView(viewModel: mapViewModel, historyModel: historyModel)
+                }
             }
 
             Tab("Stats", systemImage: "chart.bar") {
@@ -29,32 +31,20 @@ struct RootView: View {
             }
 
             Tab("Settings", systemImage: "gearshape") {
-                SettingsView(viewModel: mapViewModel, historyModel: historyModel)
+                SettingsView(
+                    viewModel: mapViewModel,
+                    historyModel: historyModel,
+                    motionService: runtime.motionService,
+                    trackingHealth: runtime.trackingHealth
+                )
             }
-        }
-        .task {
-            mapViewModel.setApplicationIsActive(scenePhase != .background)
-            historyModel.configure(
-                modelContainer: modelContext.container,
-                locationTracking: mapViewModel.locationTracking
-            )
-            mapViewModel.configurePersistence(modelContainer: modelContext.container)
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background {
-                mapViewModel.flushCoverage()
-            } else if newPhase == .active {
-                historyModel.checkCurrentStay()
-            }
-            mapViewModel.setApplicationIsActive(newPhase != .background)
         }
     }
 }
 
 #Preview {
-    RootView()
-        .modelContainer(
-            for: [
+    let container = try! ModelContainer(
+        for: Schema([
                 ExploredTileRecord.self,
                 CoverageChunkRecord.self,
                 ExplorationSummaryRecord.self,
@@ -68,7 +58,9 @@ struct RootView: View {
                 HistoryDailySummaryRecord.self,
                 HistoryGapRecord.self,
                 PlaceSuggestionPreferenceRecord.self,
-            ],
-            inMemory: true
-        )
+            ]),
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
+    RootView(runtime: AppRuntime(modelContainer: container))
+        .modelContainer(container)
 }

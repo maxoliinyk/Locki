@@ -29,11 +29,18 @@
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Locki uses your location to reveal visited streets and, when you enable history, save private trips, visits, places, routes, and movement statistics on this device.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Motion &amp; Fitness helps Locki distinguish staying, walking, and driving so your private on-device history is more accurate.</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.maxoliinyk.Locki.history-refresh</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
+		<string>fetch</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

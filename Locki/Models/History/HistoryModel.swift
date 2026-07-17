@@ -28,9 +28,16 @@ final class HistoryModel {
 
     @ObservationIgnored private var store: HistoryStore?
     @ObservationIgnored private weak var locationTracking: LocationTrackingService?
+    @ObservationIgnored private weak var oneShotLocationProvider: (any OneShotLocationProviding)?
     @ObservationIgnored private var eventContinuation: AsyncStream<HistoryEvent>.Continuation?
     @ObservationIgnored private var ingestionTask: Task<Void, Never>?
     @ObservationIgnored private var dwellCheckTask: Task<Void, Never>?
+    @ObservationIgnored private var monitorRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var opportunisticFixTask: Task<Void, Never>?
+    @ObservationIgnored private var motionService: (any MotionActivityProviding)?
+    @ObservationIgnored private var placeMonitor: (any PlaceMonitoring)?
+    @ObservationIgnored private var backgroundRefresh: (any BackgroundRefreshScheduling)?
+    @ObservationIgnored private var trackingHealth: TrackingHealthModel?
 
     private static let historyEnabledKey = "history.enabled"
 
@@ -38,17 +45,40 @@ final class HistoryModel {
         isEnabled = UserDefaults.standard.bool(forKey: Self.historyEnabledKey)
     }
 
-    func configure(modelContainer: ModelContainer, locationTracking: LocationTrackingService) {
+    func configure(
+        modelContainer: ModelContainer,
+        locationTracking: LocationTrackingService,
+        motionService: any MotionActivityProviding,
+        placeMonitor: any PlaceMonitoring,
+        backgroundRefresh: any BackgroundRefreshScheduling,
+        trackingHealth: TrackingHealthModel
+    ) {
         guard store == nil else { return }
         let store = HistoryStore(modelContainer: modelContainer)
         self.store = store
         self.locationTracking = locationTracking
+        oneShotLocationProvider = locationTracking
+        self.motionService = motionService
+        self.placeMonitor = placeMonitor
+        self.backgroundRefresh = backgroundRefresh
+        self.trackingHealth = trackingHealth
 
         let stream = AsyncStream<HistoryEvent> { [weak self] continuation in
             self?.eventContinuation = continuation
         }
         locationTracking.historyEventHandler = { [weak self] event in
+            self?.trackingHealth?.recordPassiveEvent(event.healthTitle)
             self?.eventContinuation?.yield(event)
+            if case .visit = event { self?.requestOpportunisticFix() }
+        }
+        motionService.eventHandler = { [weak self] sample in
+            self?.trackingHealth?.recordPassiveEvent("Motion")
+            self?.eventContinuation?.yield(.motion(sample))
+        }
+        placeMonitor.eventHandler = { [weak self] event in
+            self?.trackingHealth?.recordPassiveEvent("Place boundary", at: event.date)
+            self?.eventContinuation?.yield(.region(event))
+            self?.requestOpportunisticFix()
         }
         ingestionTask = Task { [weak self] in
             for await event in stream {
@@ -56,6 +86,7 @@ final class HistoryModel {
                 do {
                     overview = try await store.ingest(event)
                     persistenceIssue = false
+                    scheduleMonitorRefresh()
                 } catch {
                     persistenceIssue = true
                 }
@@ -64,6 +95,8 @@ final class HistoryModel {
 
         if isEnabled {
             locationTracking.setHistoryTrackingEnabled(true)
+            motionService.start()
+            backgroundRefresh.schedule()
             startDwellChecks()
         }
 
@@ -71,6 +104,7 @@ final class HistoryModel {
             do {
                 overview = try await store.prepare()
                 overview = try await store.setEnabled(isEnabled)
+                scheduleMonitorRefresh()
             } catch {
                 persistenceIssue = true
             }
@@ -83,16 +117,24 @@ final class HistoryModel {
         UserDefaults.standard.set(enabled, forKey: Self.historyEnabledKey)
         if !enabled {
             stopDwellChecks()
+            opportunisticFixTask?.cancel()
+            opportunisticFixTask = nil
             locationTracking.setHistoryTrackingEnabled(false)
+            motionService?.stop()
+            backgroundRefresh?.cancel()
+            Task { await placeMonitor?.removeAll() }
         }
         Task {
             do {
                 overview = try await store.setEnabled(enabled)
                 if enabled {
                     locationTracking.setHistoryTrackingEnabled(true)
+                    motionService?.start()
+                    backgroundRefresh?.schedule()
                     startDwellChecks()
                 }
                 persistenceIssue = false
+                scheduleMonitorRefresh()
             } catch {
                 persistenceIssue = true
             }
@@ -114,6 +156,81 @@ final class HistoryModel {
         eventContinuation?.yield(.dwellCheck(.now))
     }
 
+    func requestMotionAuthorization() {
+        motionService?.requestAuthorization()
+    }
+
+    func reconcile(reason: HistoryReconciliationReason) async {
+        guard isEnabled, let store else { return }
+        do {
+            let now = Date.now
+            if let motionService {
+                let start = max(overview.latestEventAt ?? now - 24 * 60 * 60, now - 24 * 60 * 60)
+                for activity in await motionService.historicalActivity(from: start, to: now) {
+                    overview = try await store.ingest(.motion(activity), now: now)
+                }
+            }
+            let candidates = try await store.monitoredPlaceCandidates()
+            await placeMonitor?.update(candidates)
+            await placeMonitor?.reconcile()
+            if reason != .backgroundRefresh {
+                _ = await oneShotLocationProvider?.requestOneShotLocation(timeout: .seconds(12))
+            }
+            overview = try await store.ingest(.reconcile(.now, reason))
+            persistenceIssue = false
+            scheduleMonitorRefresh()
+        } catch {
+            persistenceIssue = true
+        }
+    }
+
+    func performBackgroundRefresh() async -> Bool {
+        guard isEnabled,
+              let store,
+              oneShotLocationProvider != nil,
+              let motionService,
+              let placeMonitor else { return false }
+        let now = Date.now
+        let queryStart = max(overview.latestEventAt ?? now - 24 * 60 * 60, now - 24 * 60 * 60)
+        do {
+            for activity in await motionService.historicalActivity(from: queryStart, to: now) {
+                overview = try await store.ingest(.motion(activity), now: now)
+            }
+            let candidates = try await store.monitoredPlaceCandidates()
+            await placeMonitor.update(candidates)
+            await placeMonitor.reconcile()
+            _ = await oneShotLocationProvider?.requestOneShotLocation(timeout: .seconds(12))
+            overview = try await store.ingest(.reconcile(.now, .backgroundRefresh))
+            let refreshedCandidates = try await store.monitoredPlaceCandidates()
+            await placeMonitor.update(refreshedCandidates)
+            trackingHealth?.setMonitoredPlaceCount(placeMonitor.monitoredCount)
+            trackingHealth?.recordRefresh(success: true)
+            persistenceIssue = false
+            return true
+        } catch {
+            trackingHealth?.recordRefresh(success: false)
+            persistenceIssue = true
+            return false
+        }
+    }
+
+    private func scheduleMonitorRefresh() {
+        guard isEnabled, let store, let placeMonitor else { return }
+        monitorRefreshTask?.cancel()
+        monitorRefreshTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1)) }
+            catch { return }
+            guard let self else { return }
+            do {
+                let candidates = try await store.monitoredPlaceCandidates()
+                await placeMonitor.update(candidates)
+                trackingHealth?.setMonitoredPlaceCount(placeMonitor.monitoredCount)
+            } catch {
+                persistenceIssue = true
+            }
+        }
+    }
+
     private func startDwellChecks() {
         dwellCheckTask?.cancel()
         dwellCheckTask = Task { [weak self] in
@@ -125,6 +242,14 @@ final class HistoryModel {
                     return
                 }
             }
+        }
+    }
+
+    private func requestOpportunisticFix() {
+        guard isEnabled, opportunisticFixTask == nil, let oneShotLocationProvider else { return }
+        opportunisticFixTask = Task { [weak self] in
+            _ = await oneShotLocationProvider.requestOneShotLocation(timeout: .seconds(8))
+            self?.opportunisticFixTask = nil
         }
     }
 
@@ -300,5 +425,19 @@ final class HistoryModel {
         guard let exportURL else { return }
         try? FileManager.default.removeItem(at: exportURL)
         self.exportURL = nil
+    }
+}
+
+private extension HistoryEvent {
+    var healthTitle: String {
+        switch self {
+        case .sample: "Location"
+        case .visit: "System visit"
+        case .region: "Place boundary"
+        case .motion: "Motion"
+        case .dwellCheck: "Stay check"
+        case .reconcile(_, let reason): reason == .backgroundRefresh ? "Background refresh" : "Reconciliation"
+        case .gap: "Tracking gap"
+        }
     }
 }

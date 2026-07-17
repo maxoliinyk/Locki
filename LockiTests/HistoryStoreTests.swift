@@ -62,8 +62,8 @@ struct HistoryStoreTests {
         #expect(overview.placeCount == 1)
     }
 
-    @Test("Stationary silence confirms a visit after ten minutes")
-    func stationarySilenceConfirmsVisit() async throws {
+    @Test("Stationary motion corroborates a silent candidate after ten minutes")
+    func stationaryMotionConfirmsSilentVisit() async throws {
         let store = HistoryStore(modelContainer: try makeContainer())
         let start = Date(timeIntervalSinceReferenceDate: 310_000)
         _ = try await store.setEnabled(true, at: start)
@@ -73,12 +73,107 @@ struct HistoryStoreTests {
         #expect(beforeThreshold.visitCount == 0)
 
         let atThreshold = try await store.ingest(.dwellCheck(start + 600), now: start + 600)
-        #expect(atThreshold.visitCount == 1)
-        #expect(atThreshold.placeCount == 1)
+        #expect(atThreshold.visitCount == 0)
+
+        _ = try await store.ingest(
+            .motion(MotionActivitySample(kind: .stationary, confidence: 2, startedAt: start)),
+            now: start + 600
+        )
+        let corroborated = try await store.ingest(.dwellCheck(start + 600), now: start + 600)
+        #expect(corroborated.visitCount == 1)
+        #expect(corroborated.placeCount == 1)
         #expect(try await decodedExport(store).visits.first?.arrivalDate == start)
 
         let repeatedCheck = try await store.ingest(.dwellCheck(start + 900), now: start + 900)
         #expect(repeatedCheck.visitCount == 1)
+    }
+
+    @Test("A monitored known place confirms after five minutes and exits on its boundary")
+    func knownPlaceRegionTiming() async throws {
+        let store = HistoryStore(modelContainer: try makeContainer())
+        let seed = Date(timeIntervalSinceReferenceDate: 312_000)
+        _ = try await store.setEnabled(true, at: seed)
+        _ = try await store.ingest(.visit(systemVisit(longitude: 13.40, start: seed)))
+        let placeID = try #require(try await decodedExport(store).places.first?.id)
+        let arrival = seed + 86_400
+        let region = PlaceRegionEvent(
+            placeID: placeID,
+            coordinate: GeoCoordinate(latitude: 52.52, longitude: 13.40),
+            radiusMeters: 100,
+            state: .inside,
+            date: arrival
+        )
+        _ = try await store.ingest(.region(region), now: arrival)
+        _ = try await store.ingest(
+            .motion(MotionActivitySample(kind: .stationary, confidence: 2, startedAt: arrival)),
+            now: arrival
+        )
+        #expect(try await store.ingest(.dwellCheck(arrival + 299), now: arrival + 299).visitCount == 1)
+
+        let confirmed = try await store.ingest(.dwellCheck(arrival + 300), now: arrival + 300)
+        #expect(confirmed.visitCount == 2)
+
+        _ = try await store.ingest(
+            .region(
+                PlaceRegionEvent(
+                    placeID: placeID,
+                    coordinate: region.coordinate,
+                    radiusMeters: 100,
+                    state: .outside,
+                    date: arrival + 900
+                )
+            )
+        )
+        #expect(try await decodedExport(store).visits.filter { $0.placeID == placeID }.last?.departureDate == arrival + 900)
+    }
+
+    @Test("System visit arrival remains the single open visit and its departure takes precedence")
+    func systemVisitLifecycle() async throws {
+        let store = HistoryStore(modelContainer: try makeContainer())
+        let start = Date(timeIntervalSince1970: Date.now.timeIntervalSince1970.rounded(.down)) - 1_800
+        let coordinate = GeoCoordinate(latitude: 52.52, longitude: 13.40)
+        _ = try await store.setEnabled(true, at: start)
+        let arrival = SystemVisitSample(
+            coordinate: coordinate,
+            horizontalAccuracyMeters: 15,
+            arrivalDate: start,
+            departureDate: nil,
+            timeZoneIdentifier: "Europe/Berlin"
+        )
+        _ = try await store.ingest(.visit(arrival))
+        _ = try await store.ingest(.sample(sample(speed: 0, timestamp: start + 600)), now: start + 600)
+
+        var export = try await decodedExport(store)
+        let placeID = try #require(export.places.first?.id)
+        #expect(export.visits.count == 1)
+        #expect(export.visits.first?.departureDate == nil)
+
+        _ = try await store.ingest(
+            .region(
+                PlaceRegionEvent(
+                    placeID: placeID,
+                    coordinate: coordinate,
+                    radiusMeters: 100,
+                    state: .outside,
+                    date: start + 900
+                )
+            )
+        )
+        _ = try await store.ingest(
+            .visit(
+                SystemVisitSample(
+                    coordinate: coordinate,
+                    horizontalAccuracyMeters: 15,
+                    arrivalDate: start,
+                    departureDate: start + 1_200,
+                    timeZoneIdentifier: "Europe/Berlin"
+                )
+            )
+        )
+
+        export = try await decodedExport(store)
+        #expect(export.visits.count == 1)
+        #expect(export.visits.first?.departureDate == start + 1_200)
     }
 
     @Test("Movement cancels a pending silent dwell")

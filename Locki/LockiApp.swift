@@ -10,17 +10,13 @@ import SwiftUI
 
 @main
 struct LockiApp: App {
-    private let modelContainer: ModelContainer?
-
-    init() {
-        modelContainer = try? LockiPersistence.makeContainer()
-    }
+    @UIApplicationDelegateAdaptor(LockiAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
-            if let modelContainer {
-                RootView()
-                    .modelContainer(modelContainer)
+            if let runtime = appDelegate.runtime {
+                RootView(runtime: runtime)
+                    .modelContainer(runtime.modelContainer)
             } else {
                 PersistenceUnavailableView()
             }
