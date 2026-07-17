@@ -21,14 +21,14 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.navigation</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Always Location lets Locki clear your private map from movement and infer high-confidence paths between sparse background updates.</string>
+	<string>Always Location lets Locki build your private trip, visit, place, route, and movement history while the app is not open.</string>
 	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
 	<dict>
 		<key>ExplorationPrecision</key>
-		<string>Precise Location lets Locki clear the correct street instead of nearby unexplored places.</string>
+		<string>Precise Location lets Locki save the route you actually traveled and distinguish nearby visited places.</string>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Locki uses your location to clear visited streets on your private map, including after you lock the screen or switch apps while exploration is active.</string>
+	<string>Locki uses your location to reveal visited streets and, when you enable history, save private trips, visits, places, routes, and movement statistics on this device.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

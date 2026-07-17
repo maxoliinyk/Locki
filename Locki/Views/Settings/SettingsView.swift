@@ -9,16 +9,41 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var viewModel: MapViewModel
+    @Bindable var historyModel: HistoryModel
+    @State private var confirmsHistoryDeletion = false
+    @State private var confirmsCoverageDeletion = false
+    @State private var confirmsAllDeletion = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section("Privacy") {
-                    Label("Coverage stays on this device", systemImage: "lock")
-                    Label("No accounts, analytics, or raw trails", systemImage: "network.slash")
+                    Label("History and coverage stay on this device", systemImage: "lock")
+                    Label("No accounts, analytics, or Locki server", systemImage: "network.slash")
                     NavigationLink("How Locki Uses Location") {
                         LocationPrivacyView()
                     }
+                }
+
+                Section("Location History") {
+                    Toggle(
+                        "Save Location History",
+                        isOn: Binding(
+                            get: { historyModel.isEnabled },
+                            set: { historyModel.setEnabled($0) }
+                        )
+                    )
+                    Text("Stores a filtered, compressed route history and infers trips, visits, places, and statistics on this device.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if historyModel.persistenceIssue {
+                        Label("History saving is unavailable", systemImage: "externaldrive.badge.exclamationmark")
+                            .foregroundStyle(.orange)
+                    }
+                    LabeledContent("Stored route data", value: Int64(historyModel.overview.encodedByteCount).formatted(.byteCount(style: .file)))
+                    LabeledContent("Tracked days", value: historyModel.overview.trackedDayCount.formatted())
+                    LabeledContent("Tracking gaps", value: historyModel.overview.gapCount.formatted())
                 }
 
                 Section("Location") {
@@ -46,15 +71,54 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
 
                     Toggle(
-                        "Continuous Background Exploration",
+                        "Detailed Background Tracking",
                         isOn: Binding(
                             get: { viewModel.continuousBackgroundTrackingEnabled },
                             set: { viewModel.setContinuousBackgroundTrackingEnabled($0) }
                         )
                     )
-                    Text("Off by default. Efficient mode checks for meaningful movement without keeping the blue location indicator active. Continuous mode provides street-level background detail but uses more battery and shows the system indicator.")
+                    Text("On by default after you enable history. It provides detailed background routes, uses more battery, and may show the system location indicator. Turning it off keeps foreground, visit, and significant-movement capture, so history may contain gaps.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Your Data") {
+                    Menu("Prepare History Export", systemImage: "square.and.arrow.up") {
+                        ForEach(HistoryExportFormat.allCases) { format in
+                            Button(format.displayName) {
+                                Task { await historyModel.prepareExport(format) }
+                            }
+                        }
+                    }
+                    .disabled(historyModel.isExporting)
+
+                    if historyModel.isExporting {
+                        ProgressView("Preparing export")
+                    } else if let exportURL = historyModel.exportURL {
+                        ShareLink(item: exportURL) {
+                            Label("Share \(exportURL.pathExtension.uppercased()) Export", systemImage: "square.and.arrow.up")
+                        }
+                        Button("Remove Prepared Export", systemImage: "xmark") {
+                            historyModel.removeExportFile()
+                        }
+                    }
+
+                    Button("Delete Location History", systemImage: "trash", role: .destructive) {
+                        confirmsHistoryDeletion = true
+                    }
+                    NavigationLink("Delete Date Range") {
+                        HistoryRangeDeletionView(historyModel: historyModel)
+                    }
+                    Text("Deleting history removes routes, visits, places, and statistics. Explored fog coverage is kept.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Reset Exploration Coverage", systemImage: "map", role: .destructive) {
+                        confirmsCoverageDeletion = true
+                    }
+                    Button("Delete All Locki Data", systemImage: "trash.slash", role: .destructive) {
+                        confirmsAllDeletion = true
+                    }
                 }
 
                 Section("Exploration") {
@@ -68,6 +132,75 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .confirmationDialog(
+                "Delete all location history?",
+                isPresented: $confirmsHistoryDeletion,
+                titleVisibility: .visible
+            ) {
+                Button("Delete History", role: .destructive) {
+                    Task { _ = await historyModel.deleteAllHistory() }
+                }
+            } message: {
+                Text("This permanently removes every saved route, trip, visit, place, and history statistic from this device. Fog coverage remains.")
+            }
+            .confirmationDialog(
+                "Reset all exploration coverage?",
+                isPresented: $confirmsCoverageDeletion,
+                titleVisibility: .visible
+            ) {
+                Button("Reset Coverage", role: .destructive) {
+                    Task { _ = await viewModel.deleteExplorationData() }
+                }
+            } message: {
+                Text("This restores fog over every explored street and deletes pending path anchors. Location history remains.")
+            }
+            .confirmationDialog(
+                "Delete all Locki data?",
+                isPresented: $confirmsAllDeletion,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Everything", role: .destructive) {
+                    Task {
+                        _ = await historyModel.deleteAllHistory()
+                        _ = await viewModel.deleteExplorationData()
+                    }
+                }
+            } message: {
+                Text("This permanently deletes location history, inferred places and routes, statistics, exploration coverage, and pending path anchors.")
+            }
+        }
+    }
+}
+
+private struct HistoryRangeDeletionView: View {
+    @Environment(\.dismiss) private var dismiss
+    let historyModel: HistoryModel
+    @State private var startDate = Calendar.current.date(byAdding: .month, value: -1, to: .now) ?? .now
+    @State private var endDate = Date.now
+    @State private var confirmsDeletion = false
+
+    var body: some View {
+        Form {
+            Section("Range") {
+                DatePicker("From", selection: $startDate, in: ...endDate, displayedComponents: .date)
+                DatePicker("Through", selection: $endDate, in: startDate...Date.now, displayedComponents: .date)
+            }
+            Section {
+                Button("Delete This Range", systemImage: "trash", role: .destructive) {
+                    confirmsDeletion = true
+                }
+            } footer: {
+                Text("Trips, visits, route points, gaps, and derived statistics overlapping these calendar days will be removed. Fog coverage remains.")
+            }
+        }
+        .navigationTitle("Delete History Range")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Delete selected history?", isPresented: $confirmsDeletion) {
+            Button("Delete Range", role: .destructive) {
+                Task {
+                    if await historyModel.deleteHistory(from: startDate, to: endDate) { dismiss() }
+                }
+            }
         }
     }
 }
@@ -76,8 +209,9 @@ private struct LocationPrivacyView: View {
     var body: some View {
         List {
             Section("On Device") {
-                Text("Locki turns accepted precise locations into small explored-area mask cells, then discards the original location sample. It does not save a raw coordinate trail or place names.")
-                Text("Coverage masks and aggregate totals are stored locally with SwiftData. Locki has no account, analytics, advertising, or server.")
+                Text("When Location History is enabled, Locki filters precise fixes in memory, keeps selected route points, and quantizes their coordinates, time, accuracy, speed, and course before saving a compressed trajectory.")
+                Text("Locki uses that reduced trajectory to infer trips, visits, places, recurring routes, and statistics on this device. History is retained until you delete it.")
+                Text("Coverage masks, reduced history, corrections, and aggregate totals are stored locally with SwiftData. Locki has no account, analytics, advertising, or server.")
             }
 
             Section("Automatic Path Matching") {
@@ -88,12 +222,17 @@ private struct LocationPrivacyView: View {
 
             Section("Background Exploration") {
                 Text("Efficient background exploration is movement-driven and does not keep the blue location indicator active. iOS decides when significant movement updates are delivered.")
-                Text("Continuous Background Exploration is optional. It improves street-level background coverage, uses more battery, and displays the system location indicator.")
+                Text("Detailed Background Tracking is enabled by default after history consent. It improves route and speed detail, uses more battery, and may display the system location indicator.")
                 Text("Always Location supports eligible system relaunches. Force quitting prevents further capture until Locki is opened again.")
             }
 
+            Section("Place Identification") {
+                Text("Place clustering and ranking happen on device. Locki contacts Apple Maps only when you choose Identify This Place, sending that inferred place center so you can select a name and category.")
+            }
+
             Section("Control") {
-                Text("You can change location permission at any time in Settings. Deleting Locki removes its local coverage database.")
+                Text("You can disable collection without deleting existing data, delete individual timeline items, delete all history, or export reduced history as JSON or GPX.")
+                Text("Sharing an export sends it only to the destination you choose in the system share sheet. Deleting Locki removes its local database.")
             }
         }
         .navigationTitle("Location Privacy")
@@ -103,5 +242,6 @@ private struct LocationPrivacyView: View {
 
 #Preview {
     @Previewable @State var viewModel = MapViewModel()
-    SettingsView(viewModel: viewModel)
+    @Previewable @State var historyModel = HistoryModel()
+    SettingsView(viewModel: viewModel, historyModel: historyModel)
 }

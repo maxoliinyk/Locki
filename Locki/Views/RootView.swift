@@ -12,6 +12,7 @@ struct RootView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @State private var mapViewModel = MapViewModel()
+    @State private var historyModel = HistoryModel()
 
     var body: some View {
         TabView {
@@ -20,19 +21,23 @@ struct RootView: View {
             }
 
             Tab("Stats", systemImage: "chart.bar") {
-                StatsView()
+                StatsView(historyModel: historyModel)
             }
 
             Tab("Journal", systemImage: "book.pages") {
-                JournalView()
+                JournalView(historyModel: historyModel)
             }
 
             Tab("Settings", systemImage: "gearshape") {
-                SettingsView(viewModel: mapViewModel)
+                SettingsView(viewModel: mapViewModel, historyModel: historyModel)
             }
         }
         .task {
             mapViewModel.setApplicationIsActive(scenePhase != .background)
+            historyModel.configure(
+                modelContainer: modelContext.container,
+                locationTracking: mapViewModel.locationTracking
+            )
             mapViewModel.configurePersistence(modelContainer: modelContext.container)
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -52,6 +57,15 @@ struct RootView: View {
                 CoverageChunkRecord.self,
                 ExplorationSummaryRecord.self,
                 PendingPathAnchorRecord.self,
+                HistoryMetadataRecord.self,
+                TrajectoryChunkRecord.self,
+                HistoryTripRecord.self,
+                HistoryVisitRecord.self,
+                HistoryPlaceRecord.self,
+                HistoryRoutePatternRecord.self,
+                HistoryDailySummaryRecord.self,
+                HistoryGapRecord.self,
+                PlaceSuggestionPreferenceRecord.self,
             ],
             inMemory: true
         )

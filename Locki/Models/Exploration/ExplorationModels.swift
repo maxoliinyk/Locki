@@ -9,7 +9,7 @@ import CoreLocation
 import Foundation
 import MapKit
 
-nonisolated struct GeoCoordinate: Hashable, Sendable {
+nonisolated struct GeoCoordinate: Codable, Hashable, Sendable {
     static let maximumMercatorLatitude = 85.05112878
 
     let latitude: Double

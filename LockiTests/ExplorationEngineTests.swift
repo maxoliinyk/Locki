@@ -133,7 +133,11 @@ struct ExplorationEngineTests {
         )
         let delta = engine.process(sample: current, previous: previous, now: current.timestamp)
 
-        #expect(delta.chunks.count <= 2)
+        let chunkXValues = Set(delta.chunks.keys.map(\.x))
+        let maximumChunkX = (1 << engine.configuration.chunkZoom) - 1
+
+        #expect(chunkXValues == [0, maximumChunkX])
+        #expect(delta.chunks.count <= 4)
         #expect(bitCount(delta) < 100)
     }
 

@@ -146,6 +146,17 @@ actor CoverageStore {
         }
     }
 
+    func reset() throws -> CoverageSnapshot {
+        try modelContext.delete(model: CoverageChunkRecord.self)
+        try modelContext.delete(model: ExploredTileRecord.self)
+        try modelContext.delete(model: PendingPathAnchorRecord.self)
+        try modelContext.delete(model: ExplorationSummaryRecord.self)
+        try modelContext.save()
+        let empty = try snapshot()
+        try modelContext.save()
+        return empty
+    }
+
     private func migrateLegacyTilesIfNeeded() throws {
         let summary = try fetchOrCreateSummary()
         guard summary.migrationVersion < Self.currentMigrationVersion else { return }

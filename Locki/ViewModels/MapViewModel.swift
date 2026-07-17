@@ -250,6 +250,24 @@ final class MapViewModel {
         Task { await flushPendingCoverage() }
     }
 
+    func deleteExplorationData() async -> Bool {
+        guard let coverageStore else { return false }
+        flushTask?.cancel()
+        flushTask = nil
+        pendingDelta = CoverageDelta(unlockedAt: .distantPast)
+        pathMatchingCoordinator?.purge()
+        do {
+            coverageSnapshot = try await coverageStore.reset()
+            pendingPathAnchorCount = 0
+            matchedPathCount = 0
+            persistenceIssue = false
+            return true
+        } catch {
+            persistenceIssue = true
+            return false
+        }
+    }
+
     private func receive(_ delta: CoverageDelta) {
         coverageSnapshot.apply(delta)
         pendingDelta.formUnion(delta)
