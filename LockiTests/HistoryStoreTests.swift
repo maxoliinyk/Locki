@@ -62,6 +62,41 @@ struct HistoryStoreTests {
         #expect(overview.placeCount == 1)
     }
 
+    @Test("Stationary silence confirms a visit after ten minutes")
+    func stationarySilenceConfirmsVisit() async throws {
+        let store = HistoryStore(modelContainer: try makeContainer())
+        let start = Date(timeIntervalSinceReferenceDate: 310_000)
+        _ = try await store.setEnabled(true, at: start)
+        _ = try await store.ingest(.sample(sample(speed: 0, timestamp: start)), now: start)
+
+        let beforeThreshold = try await store.ingest(.dwellCheck(start + 599), now: start + 599)
+        #expect(beforeThreshold.visitCount == 0)
+
+        let atThreshold = try await store.ingest(.dwellCheck(start + 600), now: start + 600)
+        #expect(atThreshold.visitCount == 1)
+        #expect(atThreshold.placeCount == 1)
+        #expect(try await decodedExport(store).visits.first?.arrivalDate == start)
+
+        let repeatedCheck = try await store.ingest(.dwellCheck(start + 900), now: start + 900)
+        #expect(repeatedCheck.visitCount == 1)
+    }
+
+    @Test("Movement cancels a pending silent dwell")
+    func movementCancelsSilentDwell() async throws {
+        let store = HistoryStore(modelContainer: try makeContainer())
+        let start = Date(timeIntervalSinceReferenceDate: 315_000)
+        _ = try await store.setEnabled(true, at: start)
+        _ = try await store.ingest(.sample(sample(speed: 0, timestamp: start)), now: start)
+        _ = try await store.ingest(
+            .sample(sample(longitude: 13.402, speed: 3, timestamp: start + 300)),
+            now: start + 300
+        )
+
+        let overview = try await store.ingest(.dwellCheck(start + 600), now: start + 600)
+        #expect(overview.visitCount == 0)
+        #expect(overview.placeCount == 0)
+    }
+
     @Test("A visit closes only after five continuous minutes outside")
     func visitExitHysteresis() async throws {
         let store = HistoryStore(modelContainer: try makeContainer())

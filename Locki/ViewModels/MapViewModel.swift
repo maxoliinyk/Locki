@@ -147,24 +147,6 @@ final class MapViewModel {
         }
     }
 
-    var explorationStatusMessage: String {
-        if persistenceIssue { return "New coverage is visible now, but may not be saved." }
-        return switch locationTracking.state {
-        case .waitingForPermission:
-            "Allow Always Location to begin street-level exploration."
-        case .active:
-            "\(exploredTileCount.formatted()) street cells cleared on this device."
-        case .stationary:
-            "Tracking is resting until you move again."
-        case .requiresPreciseLocation:
-            "Precise Location prevents clearing the wrong street."
-        case .unavailable:
-            "Locki could not read a reliable current location."
-        case .failed:
-            "Location updates stopped unexpectedly. Reopen Locki to try again."
-        }
-    }
-
     var explorationStatusSystemImage: String {
         if persistenceIssue { return "externaldrive.badge.exclamationmark" }
         return switch locationTracking.state {

@@ -9,7 +9,20 @@ import SwiftData
 import SwiftUI
 
 struct MapView: View {
+    @Query(sort: \HistoryVisitRecord.arrivalDate, order: .reverse) private var visits: [HistoryVisitRecord]
+    @Query private var places: [HistoryPlaceRecord]
+
     @Bindable var viewModel: MapViewModel
+    let historyModel: HistoryModel
+
+    private var currentVisit: HistoryVisitRecord? {
+        visits.first { $0.departureDate == nil && !$0.isExcluded }
+    }
+
+    private var currentPlace: HistoryPlaceRecord? {
+        guard let placeID = currentVisit?.placeID else { return nil }
+        return places.first { $0.id == placeID && !$0.isExcluded }
+    }
 
     var body: some View {
         ZStack {
@@ -23,13 +36,13 @@ struct MapView: View {
                 Spacer()
 
                 HStack(alignment: .bottom) {
-                    if !viewModel.showsLocationOnboarding {
-                        StatusCard(
-                            title: viewModel.explorationStatusTitle,
-                            message: viewModel.explorationStatusMessage,
-                            systemImage: viewModel.explorationStatusSystemImage,
-                            tint: viewModel.locationTracking.state.tint
-                        )
+                    if let currentVisit {
+                        MapCurrentStayCard(place: currentPlace, visit: currentVisit)
+                            .frame(maxWidth: 300)
+                    } else if !historyModel.isEnabled, !viewModel.showsLocationOnboarding {
+                        MapHistoryOffCard {
+                            historyModel.setEnabled(true)
+                        }
                         .frame(maxWidth: 300)
                     }
 
@@ -39,6 +52,55 @@ struct MapView: View {
                 }
             }
             .padding()
+        }
+    }
+}
+
+struct MapHistoryOffCard: View {
+    let enable: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Label("Stay detection is off", systemImage: "clock.badge.exclamationmark")
+                .font(.headline)
+            Text("Enable private location history to detect stays, places, and routes on this device.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Enable Stay Detection", systemImage: "location.fill", action: enable)
+                .buttonStyle(.borderedProminent)
+        }
+        .padding()
+        .background(.regularMaterial, in: .rect(cornerRadius: 20))
+    }
+}
+
+struct MapCurrentStayCard: View {
+    let place: HistoryPlaceRecord?
+    let visit: HistoryVisitRecord
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            HStack {
+                Image(systemName: "location.fill")
+                    .imageScale(.large)
+                    .foregroundStyle(.blue)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(place.map { "You're staying at \($0.name) for" } ?? "You're staying here for")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(max(context.date.timeIntervalSince(visit.arrivalDate), 0).formattedDuration)
+                        .font(.title2.weight(.semibold))
+                        .monospacedDigit()
+                }
+
+                Spacer()
+            }
+            .padding()
+            .background(.regularMaterial, in: .rect(cornerRadius: 20))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(place.map { "Currently staying at \($0.name)" } ?? "Currently staying here")
+            .accessibilityValue(max(context.date.timeIntervalSince(visit.arrivalDate), 0).formattedDuration)
         }
     }
 }
@@ -102,19 +164,6 @@ private extension View {
     }
 }
 
-private extension LocationTrackingState {
-    var tint: Color {
-        switch self {
-        case .waitingForPermission, .stationary:
-            .secondary
-        case .active:
-            .mint
-        case .requiresPreciseLocation, .unavailable, .failed:
-            .orange
-        }
-    }
-}
-
 private struct MapLocationOnboarding: View {
     @Bindable var viewModel: MapViewModel
 
@@ -140,14 +189,17 @@ private struct MapLocationOnboarding: View {
 
 #Preview {
     @Previewable @State var viewModel = MapViewModel()
+    @Previewable @State var historyModel = HistoryModel()
 
-    MapView(viewModel: viewModel)
+    MapView(viewModel: viewModel, historyModel: historyModel)
         .modelContainer(
             for: [
                 ExploredTileRecord.self,
                 CoverageChunkRecord.self,
                 ExplorationSummaryRecord.self,
                 PendingPathAnchorRecord.self,
+                HistoryVisitRecord.self,
+                HistoryPlaceRecord.self,
             ],
             inMemory: true
         )

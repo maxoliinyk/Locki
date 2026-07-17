@@ -71,13 +71,13 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
 
                     Toggle(
-                        "Detailed Background Tracking",
+                        "Continuous Background Location",
                         isOn: Binding(
                             get: { viewModel.continuousBackgroundTrackingEnabled },
                             set: { viewModel.setContinuousBackgroundTrackingEnabled($0) }
                         )
                     )
-                    Text("On by default after you enable history. It provides detailed background routes, uses more battery, and may show the system location indicator. Turning it off keeps foreground, visit, and significant-movement capture, so history may contain gaps.")
+                    Text("On by default after you enable history. Locki continues recording detailed routes and stays when the app is not visible, uses more battery, and may show the system location indicator. Turning it off keeps foreground, visit, and significant-movement capture, so history may contain gaps.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

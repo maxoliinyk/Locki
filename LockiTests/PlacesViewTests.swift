@@ -65,9 +65,21 @@ struct PlacesViewTests {
         let detail = NavigationStack { PlaceDetailView(place: place, historyModel: model) }
             .modelContainer(container)
             .frame(width: 390, height: 844)
+        let currentStay = MapCurrentStayCard(
+            place: place,
+            visit: try #require(
+                container.mainContext.fetch(FetchDescriptor<HistoryVisitRecord>())
+                    .first { $0.departureDate == nil }
+            )
+        )
+        .frame(width: 300)
+        let historyOff = MapHistoryOffCard(enable: {})
+            .frame(width: 300)
 
         #expect(ImageRenderer(content: browser).uiImage != nil)
         #expect(ImageRenderer(content: detail).uiImage != nil)
+        #expect(ImageRenderer(content: currentStay).uiImage != nil)
+        #expect(ImageRenderer(content: historyOff).uiImage != nil)
     }
 
     private func makeContainer() throws -> ModelContainer {

@@ -17,7 +17,7 @@ struct RootView: View {
     var body: some View {
         TabView {
             Tab("Map", systemImage: "map") {
-                MapView(viewModel: mapViewModel)
+                MapView(viewModel: mapViewModel, historyModel: historyModel)
             }
 
             Tab("Stats", systemImage: "chart.bar") {
@@ -43,6 +43,8 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
                 mapViewModel.flushCoverage()
+            } else if newPhase == .active {
+                historyModel.checkCurrentStay()
             }
             mapViewModel.setApplicationIsActive(newPhase != .background)
         }

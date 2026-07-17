@@ -20,6 +20,7 @@ nonisolated enum HistoryGapReason: String, Codable, Hashable, Sendable {
 nonisolated enum HistoryEvent: Hashable, Sendable {
     case sample(HistoryLocationSample)
     case visit(SystemVisitSample)
+    case dwellCheck(Date)
     case gap(start: Date, end: Date?, reason: HistoryGapReason)
 }
 

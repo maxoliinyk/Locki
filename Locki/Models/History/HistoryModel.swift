@@ -30,6 +30,7 @@ final class HistoryModel {
     @ObservationIgnored private weak var locationTracking: LocationTrackingService?
     @ObservationIgnored private var eventContinuation: AsyncStream<HistoryEvent>.Continuation?
     @ObservationIgnored private var ingestionTask: Task<Void, Never>?
+    @ObservationIgnored private var dwellCheckTask: Task<Void, Never>?
 
     private static let historyEnabledKey = "history.enabled"
 
@@ -61,13 +62,15 @@ final class HistoryModel {
             }
         }
 
+        if isEnabled {
+            locationTracking.setHistoryTrackingEnabled(true)
+            startDwellChecks()
+        }
+
         Task {
             do {
                 overview = try await store.prepare()
                 overview = try await store.setEnabled(isEnabled)
-                if isEnabled {
-                    locationTracking.setHistoryTrackingEnabled(true)
-                }
             } catch {
                 persistenceIssue = true
             }
@@ -79,6 +82,7 @@ final class HistoryModel {
         isEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.historyEnabledKey)
         if !enabled {
+            stopDwellChecks()
             locationTracking.setHistoryTrackingEnabled(false)
         }
         Task {
@@ -86,6 +90,7 @@ final class HistoryModel {
                 overview = try await store.setEnabled(enabled)
                 if enabled {
                     locationTracking.setHistoryTrackingEnabled(true)
+                    startDwellChecks()
                 }
                 persistenceIssue = false
             } catch {
@@ -102,6 +107,30 @@ final class HistoryModel {
         } catch {
             persistenceIssue = true
         }
+    }
+
+    func checkCurrentStay() {
+        guard isEnabled else { return }
+        eventContinuation?.yield(.dwellCheck(.now))
+    }
+
+    private func startDwellChecks() {
+        dwellCheckTask?.cancel()
+        dwellCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.checkCurrentStay()
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopDwellChecks() {
+        dwellCheckTask?.cancel()
+        dwellCheckTask = nil
     }
 
     func deleteTrip(id: UUID) {

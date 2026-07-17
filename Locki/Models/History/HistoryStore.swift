@@ -58,6 +58,8 @@ actor HistoryStore {
             try ingest(sample, now: now)
         case .visit(let visit):
             try ingest(visit)
+        case .dwellCheck(let date):
+            try confirmDwell(at: date)
         case .gap(let start, let end, let reason):
             let metadata = try metadata()
             try closeOpenVisit(metadata: metadata, at: start)
@@ -562,35 +564,58 @@ actor HistoryStore {
             metadata.candidateCount += 1
 
             guard visitEngine.qualifies(startedAt: startedAt, current: sample.timestamp) else { return false }
-            let finalCenter = GeoCoordinate(
-                latitude: metadata.candidateLatitude ?? sample.coordinate.latitude,
-                longitude: metadata.candidateLongitude ?? sample.coordinate.longitude
-            )
-            let accuracy = metadata.candidateAccuracyMeters ?? sample.horizontalAccuracyMeters
-            let place = try matchingPlace(coordinate: finalCenter, accuracy: accuracy)
-                ?? createPlace(coordinate: finalCenter, radius: visitEngine.radius(forAccuracy: accuracy))
-            let visit = HistoryVisitRecord(
-                placeID: place.id,
-                arrivalDate: startedAt,
-                timeZoneIdentifier: sample.timeZoneIdentifier,
-                latitude: finalCenter.latitude,
-                longitude: finalCenter.longitude,
-                radiusMeters: visitEngine.radius(forAccuracy: accuracy),
-                sourceRawValue: "inferred",
-                quality: max(0, 1 - accuracy / configuration.maximumVisitRadiusMeters)
-            )
-            modelContext.insert(visit)
-            metadata.openVisitID = visit.id
-            resetCandidate(metadata)
-            try refreshPlace(id: place.id)
-            let summary = try dailySummary(at: startedAt, timeZoneIdentifier: sample.timeZoneIdentifier)
-            summary.visitCount += 1
-            try closeOpenTrip(metadata: metadata, at: startedAt, destinationPlaceID: place.id)
-            return true
+            return try openCandidateVisit(metadata: metadata, fallbackSample: sample)
         }
 
         startCandidate(sample, metadata: metadata)
         return false
+    }
+
+    private func confirmDwell(at date: Date) throws {
+        let metadata = try metadata()
+        guard metadata.enabledAt != nil,
+              metadata.openVisitID == nil,
+              let startedAt = metadata.candidateStartedAt,
+              date >= startedAt,
+              visitEngine.qualifies(startedAt: startedAt, current: date),
+              (metadata.lastSpeedMetersPerSecond ?? 0) <= 0.8 else { return }
+        _ = try openCandidateVisit(metadata: metadata)
+    }
+
+    private func openCandidateVisit(
+        metadata: HistoryMetadataRecord,
+        fallbackSample: HistoryLocationSample? = nil
+    ) throws -> Bool {
+        guard let startedAt = metadata.candidateStartedAt,
+              let latitude = metadata.candidateLatitude ?? fallbackSample?.coordinate.latitude,
+              let longitude = metadata.candidateLongitude ?? fallbackSample?.coordinate.longitude else { return false }
+        let center = GeoCoordinate(latitude: latitude, longitude: longitude)
+        let accuracy = metadata.candidateAccuracyMeters
+            ?? fallbackSample?.horizontalAccuracyMeters
+            ?? configuration.baseVisitRadiusMeters
+        let timeZoneIdentifier = fallbackSample?.timeZoneIdentifier
+            ?? metadata.lastTimeZoneIdentifier
+            ?? TimeZone.current.identifier
+        let place = try matchingPlace(coordinate: center, accuracy: accuracy)
+            ?? createPlace(coordinate: center, radius: visitEngine.radius(forAccuracy: accuracy))
+        let visit = HistoryVisitRecord(
+            placeID: place.id,
+            arrivalDate: startedAt,
+            timeZoneIdentifier: timeZoneIdentifier,
+            latitude: center.latitude,
+            longitude: center.longitude,
+            radiusMeters: visitEngine.radius(forAccuracy: accuracy),
+            sourceRawValue: "inferred",
+            quality: max(0, 1 - accuracy / configuration.maximumVisitRadiusMeters)
+        )
+        modelContext.insert(visit)
+        metadata.openVisitID = visit.id
+        resetCandidate(metadata)
+        try refreshPlace(id: place.id)
+        let summary = try dailySummary(at: startedAt, timeZoneIdentifier: timeZoneIdentifier)
+        summary.visitCount += 1
+        try closeOpenTrip(metadata: metadata, at: startedAt, destinationPlaceID: place.id)
+        return true
     }
 
     private func startCandidate(_ sample: HistoryLocationSample, metadata: HistoryMetadataRecord) {

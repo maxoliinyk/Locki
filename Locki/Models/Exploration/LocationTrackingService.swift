@@ -256,7 +256,12 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
-        Task { @MainActor in state = .stationary }
+        Task { @MainActor in
+            if historyTrackingEnabled {
+                historyEventHandler?(.dwellCheck(.now))
+            }
+            state = .stationary
+        }
     }
 
     nonisolated func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
