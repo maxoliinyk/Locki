@@ -333,7 +333,7 @@
 				DEVELOPMENT_TEAM = F2Z5AUR56U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Configuration/Locki-Info.plist;
+				INFOPLIST_FILE = "Configuration/Locki-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Locki;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki build your private trip, visit, place, route, and movement history while the app is not open.";
@@ -374,7 +374,7 @@
 				DEVELOPMENT_TEAM = F2Z5AUR56U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Configuration/Locki-Info.plist;
+				INFOPLIST_FILE = "Configuration/Locki-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Locki;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki build your private trip, visit, place, route, and movement history while the app is not open.";

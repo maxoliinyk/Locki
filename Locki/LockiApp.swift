@@ -10,23 +10,42 @@ import SwiftUI
 
 @main
 struct LockiApp: App {
-    private let modelContainer: ModelContainer
+    private let modelContainer: ModelContainer?
 
     init() {
-        do {
-            modelContainer = try ModelContainer(
-                for: Schema(versionedSchema: LockiSchemaV3.self),
-                migrationPlan: LockiSchemaMigrationPlan.self
-            )
-        } catch {
-            preconditionFailure("Locki could not open its private local database: \(error.localizedDescription)")
-        }
+        modelContainer = try? LockiPersistence.makeContainer()
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            if let modelContainer {
+                RootView()
+                    .modelContainer(modelContainer)
+            } else {
+                PersistenceUnavailableView()
+            }
         }
-        .modelContainer(modelContainer)
+    }
+}
+
+enum LockiPersistence {
+    static func makeContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: Schema(versionedSchema: LockiSchemaV3.self),
+            migrationPlan: LockiSchemaMigrationPlan.self
+        )
+    }
+}
+
+private struct PersistenceUnavailableView: View {
+    var body: some View {
+        ContentUnavailableView {
+            Label("Unable to Open Private Data", systemImage: "externaldrive.badge.exclamationmark")
+        } description: {
+            Text(
+                "Your location history is still stored on this device. Close and reopen Locki. "
+                    + "If the problem continues, install the next available update."
+            )
+        }
     }
 }
