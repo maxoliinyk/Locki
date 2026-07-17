@@ -18,6 +18,8 @@ struct JournalView: View {
 
     let historyModel: HistoryModel
     @State private var selectedDay = Calendar.current.startOfDay(for: .now)
+    @State private var pendingDeletion: JournalDeletion?
+    @State private var showsDeletionError = false
 
     private var dayInterval: DateInterval {
         let calendar = Calendar.current
@@ -111,6 +113,30 @@ struct JournalView: View {
             .navigationTitle("Journal")
             .task { await historyModel.refresh() }
         }
+        .confirmationDialog(
+            pendingDeletion?.title ?? "Delete history item?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { deletion in
+            Button(deletion.actionTitle, role: .destructive) {
+                Task {
+                    if !(await performDeletion(deletion)) {
+                        showsDeletionError = true
+                    }
+                }
+            }
+        } message: { deletion in
+            Text(deletion.message)
+        }
+        .alert("Couldn’t Delete History", isPresented: $showsDeletionError) {
+            Button("OK") {}
+        } message: {
+            Text("Locki couldn’t save this change. Your history item may still be present.")
+        }
     }
 
     private var dayPicker: some View {
@@ -120,6 +146,9 @@ struct JournalView: View {
                     selectedDay = Calendar.current.date(byAdding: .day, value: -1, to: selectedDay) ?? selectedDay
                 }
                 .labelStyle(.iconOnly)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(.rect)
+                .buttonStyle(.borderless)
 
                 Spacer()
                 DatePicker("Day", selection: $selectedDay, in: ...Date.now, displayedComponents: .date)
@@ -134,6 +163,9 @@ struct JournalView: View {
                     )
                 }
                 .labelStyle(.iconOnly)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(.rect)
+                .buttonStyle(.borderless)
                 .disabled(Calendar.current.isDateInToday(selectedDay))
             }
         }
@@ -156,10 +188,12 @@ struct JournalView: View {
             }
             .swipeActions {
                 Button("Delete", systemImage: "trash", role: .destructive) {
-                    historyModel.deleteTrip(id: trip.id)
+                    pendingDeletion = .trip(id: trip.id)
                 }
             }
-            .accessibilityAction(named: "Delete trip") { historyModel.deleteTrip(id: trip.id) }
+            .accessibilityAction(named: "Delete trip") {
+                pendingDeletion = .trip(id: trip.id)
+            }
 
         case .visit(let visit):
             let place = places.first { $0.id == visit.placeID }
@@ -179,10 +213,12 @@ struct JournalView: View {
             }
             .swipeActions {
                 Button("Delete", systemImage: "trash", role: .destructive) {
-                    historyModel.deleteVisit(id: visit.id)
+                    pendingDeletion = .visit(id: visit.id)
                 }
             }
-            .accessibilityAction(named: "Delete visit") { historyModel.deleteVisit(id: visit.id) }
+            .accessibilityAction(named: "Delete visit") {
+                pendingDeletion = .visit(id: visit.id)
+            }
 
         case .gap(let gap):
             JournalRow(
@@ -193,6 +229,39 @@ struct JournalView: View {
                 warning: gap.endedAt == nil ? "Ongoing" : nil
             )
             .foregroundStyle(.orange)
+        }
+    }
+
+    private func performDeletion(_ deletion: JournalDeletion) async -> Bool {
+        switch deletion {
+        case .trip(let id): await historyModel.deleteTrip(id: id)
+        case .visit(let id): await historyModel.deleteVisit(id: id)
+        }
+    }
+}
+
+private enum JournalDeletion {
+    case trip(id: UUID)
+    case visit(id: UUID)
+
+    var title: String {
+        switch self {
+        case .trip: "Delete this trip?"
+        case .visit: "Delete this visit?"
+        }
+    }
+
+    var actionTitle: String {
+        switch self {
+        case .trip: "Delete Trip"
+        case .visit: "Delete Visit"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .trip: "This permanently removes the trip and its saved route points. Related statistics will be recalculated."
+        case .visit: "This permanently removes the visit. Related place totals and statistics will be recalculated."
         }
     }
 }

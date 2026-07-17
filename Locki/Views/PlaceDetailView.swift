@@ -10,6 +10,7 @@ import CoreLocation
 import MapKit
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct PlaceDetailView: View {
     @Environment(\.dismiss) private var dismiss
@@ -21,11 +22,21 @@ struct PlaceDetailView: View {
     let historyModel: HistoryModel
     @State private var name = ""
     @State private var category = ""
+    @State private var savedName = ""
+    @State private var savedCategory = ""
+    @State private var saveState = PlaceSaveState.idle
     @State private var lookupState: LookupState = .idle
     @State private var mergeTarget: HistoryPlaceRecord?
+    @State private var pendingVisitDeletion: HistoryVisitRecord?
+    @State private var showsDeletionError = false
     @State private var period = PlaceDetailPeriod.month
 
     private var visits: [HistoryVisitRecord] { allVisits.filter { $0.placeID == place.id } }
+    private var normalizedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var normalizedCategory: String { category.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var hasUnsavedChanges: Bool {
+        normalizedName != savedName || normalizedCategory != savedCategory
+    }
     private var analytics: PlaceAnalyticsSnapshot {
         PlaceAnalyticsEngine().snapshot(
             visits: visits.map(\.snapshot),
@@ -65,7 +76,7 @@ struct PlaceDetailView: View {
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
 
-            Section("Place") {
+            Section("Place Details") {
                 TextField("Name", text: $name)
                 TextField("Category", text: $category)
                 ScrollView(.horizontal) {
@@ -76,10 +87,45 @@ struct PlaceDetailView: View {
                                 category = label
                             }
                             .buttonStyle(.bordered)
+                            .frame(minHeight: 44)
+                            .contentShape(.rect)
                         }
                     }
                 }
                 .scrollIndicators(.hidden)
+                if normalizedName.isEmpty {
+                    Label("A place name is required", systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Save Changes", systemImage: "checkmark") {
+                    Task {
+                        await savePlaceDetails(
+                            name: normalizedName,
+                            category: normalizedCategory,
+                            source: "user"
+                        )
+                    }
+                }
+                .disabled(normalizedName.isEmpty || !hasUnsavedChanges || saveState == .saving)
+
+                switch saveState {
+                case .idle:
+                    EmptyView()
+                case .saving:
+                    ProgressView("Saving place")
+                case .saved where !hasUnsavedChanges:
+                    Label("Changes saved", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .saved:
+                    EmptyView()
+                case .failed:
+                    Label("Changes couldn’t be saved. Try again.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                }
+            }
+
+            Section {
                 Toggle(
                     "Favorite",
                     isOn: Binding(
@@ -94,32 +140,25 @@ struct PlaceDetailView: View {
                         set: { historyModel.setPlaceExcluded(id: place.id, isExcluded: $0) }
                     )
                 )
-                Button("Save Changes", systemImage: "checkmark") {
-                    Task {
-                        _ = await historyModel.updatePlace(
-                            id: place.id,
-                            name: name.isEmpty ? place.name : name,
-                            category: category.isEmpty ? nil : category
-                        )
-                    }
-                }
+            } header: {
+                Text("Preferences")
+            } footer: {
+                Text("Favorite and ranking changes apply immediately.")
             }
 
             if let suggestion {
                 Section("Suggested Label") {
                     Label("This may be your \(suggestion.rawValue.lowercased()).", systemImage: "sparkles")
                     Button("Name It \(suggestion.rawValue)") {
-                        name = suggestion.rawValue
-                        category = suggestion.rawValue
                         Task {
-                            _ = await historyModel.updatePlace(
-                                id: place.id,
+                            await savePlaceDetails(
                                 name: suggestion.rawValue,
                                 category: suggestion.rawValue,
                                 source: "suggestion"
                             )
                         }
                     }
+                    .disabled(saveState == .saving)
                     Button("Dismiss Suggestion", role: .cancel) {
                         historyModel.dismissLabelSuggestion(placeID: place.id, suggestion: suggestion)
                     }
@@ -128,7 +167,7 @@ struct PlaceDetailView: View {
 
             Section("Apple Maps") {
                 Button("Identify This Place", systemImage: "map") { identifyPlace() }
-                    .disabled(lookupState == .loading)
+                    .disabled(lookupState == .loading || saveState == .saving)
                 switch lookupState {
                 case .idle: Text("Only this place's center is sent when you request identification.")
                 case .loading: ProgressView("Looking up place")
@@ -226,10 +265,15 @@ struct PlaceDetailView: View {
                                     Task { _ = await historyModel.splitVisit(id: visit.id) }
                                 }
                                 Button("Delete Visit", systemImage: "trash", role: .destructive) {
-                                    historyModel.deleteVisit(id: visit.id)
+                                    pendingVisitDeletion = visit
                                 }
                             }
                             .labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(.rect)
+                            .accessibilityLabel(
+                                "Corrections for visit on \(visit.arrivalDate.formatted(date: .abbreviated, time: .shortened))"
+                            )
                         }
                     }
                 }
@@ -250,6 +294,8 @@ struct PlaceDetailView: View {
         .onAppear {
             name = place.name
             category = place.category ?? ""
+            savedName = name
+            savedCategory = category
         }
         .confirmationDialog(
             "Merge \(place.name)?",
@@ -265,6 +311,30 @@ struct PlaceDetailView: View {
             }
         } message: { target in
             Text("All visits from \(place.name) will be reassigned to \(target.name).")
+        }
+        .confirmationDialog(
+            "Delete this visit?",
+            isPresented: Binding(
+                get: { pendingVisitDeletion != nil },
+                set: { if !$0 { pendingVisitDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingVisitDeletion
+        ) { visit in
+            Button("Delete Visit", role: .destructive) {
+                Task {
+                    if !(await historyModel.deleteVisit(id: visit.id)) {
+                        showsDeletionError = true
+                    }
+                }
+            }
+        } message: { _ in
+            Text("This permanently removes the visit. Place totals and statistics will be recalculated.")
+        }
+        .alert("Couldn’t Delete Visit", isPresented: $showsDeletionError) {
+            Button("OK") {}
+        } message: {
+            Text("Locki couldn’t save this change. The visit may still be present.")
         }
     }
 
@@ -287,6 +357,31 @@ struct PlaceDetailView: View {
         return symbols[weekday - 1]
     }
 
+    @discardableResult
+    private func savePlaceDetails(name: String, category: String, source: String) async -> Bool {
+        guard saveState != .saving, !name.isEmpty else { return false }
+        saveState = .saving
+        let categoryValue = category.isEmpty ? nil : category
+        if await historyModel.updatePlace(
+            id: place.id,
+            name: name,
+            category: categoryValue,
+            source: source
+        ) {
+            self.name = name
+            self.category = category
+            savedName = name
+            savedCategory = category
+            saveState = .saved
+            UIAccessibility.post(notification: .announcement, argument: "Place changes saved")
+            return true
+        } else {
+            saveState = .failed
+            UIAccessibility.post(notification: .announcement, argument: "Place changes couldn’t be saved")
+            return false
+        }
+    }
+
     private func identifyPlace() {
         lookupState = .loading
         Task {
@@ -301,18 +396,27 @@ struct PlaceDetailView: View {
                 }
                 name = foundName
                 category = item.pointOfInterestCategory?.rawValue ?? category
-                _ = await historyModel.updatePlace(
-                    id: place.id,
+                if await savePlaceDetails(
                     name: foundName,
-                    category: category.isEmpty ? nil : category,
+                    category: normalizedCategory,
                     source: "apple"
-                )
-                lookupState = .found(foundName)
+                ) {
+                    lookupState = .found(foundName)
+                } else {
+                    lookupState = .failed
+                }
             } catch {
                 lookupState = .failed
             }
         }
     }
+}
+
+private enum PlaceSaveState {
+    case idle
+    case saving
+    case saved
+    case failed
 }
 
 private enum PlaceDetailPeriod: String, CaseIterable, Identifiable {

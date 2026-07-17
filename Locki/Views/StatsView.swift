@@ -54,15 +54,6 @@ struct StatsView: View {
         return result + max((visit.departureDate ?? .now).timeIntervalSince(start), 0)
     } }
 
-    private var currentVisit: HistoryVisitRecord? {
-        visits.first { $0.departureDate == nil && !$0.isExcluded }
-    }
-
-    private var currentPlace: HistoryPlaceRecord? {
-        guard let placeID = currentVisit?.placeID else { return nil }
-        return places.first { $0.id == placeID }
-    }
-
     private var favoritePlaces: [HistoryPlaceRecord] {
         places
             .filter { place in
@@ -116,17 +107,6 @@ struct StatsView: View {
                 }
 
                 if historyModel.overview.latestEventAt != nil || !days.isEmpty {
-                    Section("Places") {
-                        if let currentVisit {
-                            CurrentPlaceCard(place: currentPlace, visit: currentVisit)
-                        }
-                        NavigationLink {
-                            PlacesView(historyModel: historyModel)
-                        } label: {
-                            LabeledContent("Browse All Places", value: places.filter { !$0.isExcluded }.count.formatted())
-                        }
-                    }
-
                     Section("Overview") {
                         LabeledContent("Distance", value: distance.formattedDistance)
                         LabeledContent("Moving time", value: movingDuration.formattedDuration)
@@ -147,13 +127,28 @@ struct StatsView: View {
                                     y: .value("Distance", day.distanceMeters / 1_000)
                                 )
                                 .foregroundStyle(day.completeness < 1 ? .orange : .blue)
+                                .annotation(position: .top) {
+                                    if day.completeness < 1 {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .font(.caption2)
+                                            .foregroundStyle(.orange)
+                                            .accessibilityHidden(true)
+                                    }
+                                }
                                 .accessibilityLabel(day.dayStart.formatted(date: .abbreviated, time: .omitted))
-                                .accessibilityValue(day.distanceMeters.formattedDistance)
+                                .accessibilityValue(
+                                    day.completeness < 1
+                                        ? "\(day.distanceMeters.formattedDistance), incomplete due to tracking gaps"
+                                        : "\(day.distanceMeters.formattedDistance), complete"
+                                )
                             }
                             .chartYAxisLabel("Kilometers")
                             .chartScrollableAxes(.horizontal)
                             .chartXVisibleDomain(length: min(TimeInterval(filteredDays.count), 14) * 86_400)
                             .frame(minHeight: 220)
+                            Text("A warning symbol marks days with incomplete history.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
 

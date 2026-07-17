@@ -259,19 +259,27 @@ final class HistoryModel {
         dwellCheckTask = nil
     }
 
-    func deleteTrip(id: UUID) {
-        guard let store else { return }
-        Task {
-            do { overview = try await store.deleteTrip(id: id) }
-            catch { persistenceIssue = true }
+    func deleteTrip(id: UUID) async -> Bool {
+        guard let store else { return false }
+        do {
+            overview = try await store.deleteTrip(id: id)
+            persistenceIssue = false
+            return true
+        } catch {
+            persistenceIssue = true
+            return false
         }
     }
 
-    func deleteVisit(id: UUID) {
-        guard let store else { return }
-        Task {
-            do { overview = try await store.deleteVisit(id: id) }
-            catch { persistenceIssue = true }
+    func deleteVisit(id: UUID) async -> Bool {
+        guard let store else { return false }
+        do {
+            overview = try await store.deleteVisit(id: id)
+            persistenceIssue = false
+            return true
+        } catch {
+            persistenceIssue = true
+            return false
         }
     }
 

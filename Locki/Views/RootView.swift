@@ -22,12 +22,18 @@ struct RootView: View {
                 }
             }
 
-            Tab("Stats", systemImage: "chart.bar") {
-                StatsView(historyModel: historyModel)
+            Tab("Places", systemImage: "mappin.and.ellipse") {
+                NavigationStack {
+                    PlacesView(historyModel: historyModel)
+                }
             }
 
             Tab("Journal", systemImage: "book.pages") {
                 JournalView(historyModel: historyModel)
+            }
+
+            Tab("Stats", systemImage: "chart.bar") {
+                StatsView(historyModel: historyModel)
             }
 
             Tab("Settings", systemImage: "gearshape") {
