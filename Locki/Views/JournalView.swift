@@ -13,7 +13,7 @@ struct JournalView: View {
             ContentUnavailableView(
                 "No Journal Yet",
                 systemImage: "book.pages",
-                description: Text("Your private location journal will appear here once passive tracking is added.")
+                description: Text("Visit summaries and notes will appear here after the exploration foundation is stable.")
             )
             .navigationTitle("Journal")
         }

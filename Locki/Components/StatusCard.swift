@@ -37,8 +37,8 @@ struct StatusCard: View {
 
 #Preview {
     StatusCard(
-        title: "Paused",
-        message: "Tracking is paused.",
+        title: "Exploring",
+        message: "Location tracking is active.",
         systemImage: "pause.circle.fill",
         tint: .secondary
     )

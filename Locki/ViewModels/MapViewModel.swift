@@ -5,48 +5,63 @@
 //  Created by Max Oliinyk on 06.05.2026.
 //
 
+import CoreLocation
 import MapKit
 import Observation
+import SwiftData
 import SwiftUI
 
 @MainActor
 @Observable
-final class MapViewModel: NSObject, CLLocationManagerDelegate {
-    var cameraPosition: MapCameraPosition
+final class MapViewModel {
     var mapStyle: LockiMapStyle = .standard
-    var showsUserLocation = false
-    var isCameraFollowingUser = false
-    private(set) var locationAuthorizationStatus: CLAuthorizationStatus
+    private(set) var coverageSnapshot: CoverageSnapshot = .empty
+    private(set) var recenterRequest = 0
+    private(set) var persistenceIssue = false
 
-    @ObservationIgnored private let locationManager = CLLocationManager()
-    @ObservationIgnored private let geocoder = CLGeocoder()
+    let locationTracking: LocationTrackingService
 
-    override init() {
-        cameraPosition = .region(.defaultLockiRegion)
-        locationAuthorizationStatus = locationManager.authorizationStatus
+    @ObservationIgnored private var coverageStore: CoverageStore?
+    @ObservationIgnored private var pendingDelta = CoverageDelta(unlockedAt: .distantPast)
+    @ObservationIgnored private var flushTask: Task<Void, Never>?
 
-        super.init()
-
-        locationManager.delegate = self
-        updateLocationState(for: locationManager.authorizationStatus)
-
-        Task {
-            await updateFallbackRegionForCurrentLocale()
+    init(locationTracking: LocationTrackingService = LocationTrackingService()) {
+        self.locationTracking = locationTracking
+        locationTracking.deltaHandler = { [weak self] delta in
+            self?.receive(delta)
         }
     }
 
-    var canRecenterMap: Bool {
-        hasLocationAccess
+    var locationAuthorizationStatus: CLAuthorizationStatus {
+        locationTracking.authorizationStatus
+    }
+
+    var showsUserLocation: Bool {
+        locationTracking.hasLocationAccess
     }
 
     var showsLocationOnboarding: Bool {
-        !hasLocationAccess
+        !locationTracking.hasLocationAccess
+    }
+
+    var canRecenterMap: Bool {
+        locationTracking.hasLocationAccess
+    }
+
+    var exploredTileCount: Int {
+        coverageSnapshot.totalExploredCellCount
+    }
+
+    var lastUnlockDate: Date? {
+        coverageSnapshot.lastUnlockDate
     }
 
     var locationPermissionTitle: String {
         switch locationAuthorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            "Location allowed"
+        case .authorizedAlways:
+            "Always allowed"
+        case .authorizedWhenInUse:
+            "While using Locki"
         case .denied:
             "Location denied"
         case .restricted:
@@ -63,20 +78,24 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
         case .denied, .restricted:
             "Open Settings"
         default:
-            "Enable Location"
+            "Enable Exploration"
         }
     }
 
     var locationPermissionDescription: String {
         switch locationAuthorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            "Locki can show your current position on the map."
+        case .authorizedAlways:
+            "Locki continuously clears your private map in the foreground and background, including eligible system relaunches."
+        case .authorizedWhenInUse where locationTracking.accuracyAuthorization != .fullAccuracy:
+            "Turn on Precise Location so Locki clears the correct street."
+        case .authorizedWhenInUse:
+            "Locki clears your private map while active and after you lock the screen or switch apps."
         case .denied:
-            "Allow location access in Settings to show your position on the map."
+            "Allow location in Settings to clear the textured fog from places you visit."
         case .restricted:
             "Location access is restricted on this device."
         case .notDetermined:
-            "Allow location access to show your current position on the map."
+            "Enable exploration to clear street-level fog as you walk and travel. Coverage stays on this device."
         @unknown default:
             "Locki cannot determine location permission right now."
         }
@@ -84,8 +103,10 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
 
     var locationPermissionSystemImage: String {
         switch locationAuthorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
+        case .authorizedAlways:
             "location.fill"
+        case .authorizedWhenInUse:
+            "location"
         case .denied, .restricted:
             "location.slash"
         case .notDetermined:
@@ -95,102 +116,131 @@ final class MapViewModel: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    var explorationStatusTitle: String {
+        if persistenceIssue { return "Saving unavailable" }
+        return switch locationTracking.state {
+        case .waitingForPermission:
+            "Waiting for location"
+        case .active:
+            "Exploring"
+        case .stationary:
+            "Exploration ready"
+        case .requiresPreciseLocation:
+            "Precise Location needed"
+        case .unavailable:
+            "Location unavailable"
+        case .failed:
+            "Exploration unavailable"
+        }
+    }
+
+    var explorationStatusMessage: String {
+        if persistenceIssue { return "New coverage is visible now, but may not be saved." }
+        return switch locationTracking.state {
+        case .waitingForPermission:
+            "Allow Always Location to begin street-level exploration."
+        case .active:
+            "\(exploredTileCount.formatted()) street cells cleared on this device."
+        case .stationary:
+            "Tracking is resting until you move again."
+        case .requiresPreciseLocation:
+            "Precise Location prevents clearing the wrong street."
+        case .unavailable:
+            "Locki could not read a reliable current location."
+        case .failed:
+            "Location updates stopped unexpectedly. Reopen Locki to try again."
+        }
+    }
+
+    var explorationStatusSystemImage: String {
+        if persistenceIssue { return "externaldrive.badge.exclamationmark" }
+        return switch locationTracking.state {
+        case .waitingForPermission:
+            "location.circle"
+        case .active:
+            "map.fill"
+        case .stationary:
+            "figure.stand"
+        case .requiresPreciseLocation:
+            "scope"
+        case .unavailable, .failed:
+            "location.slash"
+        }
+    }
+
+    func configurePersistence(modelContainer: ModelContainer) {
+        guard coverageStore == nil else { return }
+        let store = CoverageStore(modelContainer: modelContainer)
+        coverageStore = store
+        locationTracking.start()
+
+        Task {
+            do {
+                coverageSnapshot = try await store.prepare()
+            } catch {
+                persistenceIssue = true
+            }
+        }
+    }
+
     func requestLocationAccess() {
-        switch locationManager.authorizationStatus {
-        case .notDetermined:
-            locationManager.requestWhenInUseAuthorization()
+        switch locationAuthorizationStatus {
         case .denied, .restricted:
             openAppSettings()
         default:
-            updateLocationState(for: locationManager.authorizationStatus)
+            locationTracking.requestAlwaysLocationAccess()
         }
+    }
+
+    func requestPreciseLocation() {
+        locationTracking.requestPreciseLocation()
     }
 
     func recenterMap() {
-        guard hasLocationAccess else {
-            return
-        }
+        guard canRecenterMap else { return }
+        recenterRequest &+= 1
+    }
 
-        showsUserLocation = true
-        isCameraFollowingUser = true
+    func flushCoverage() {
+        Task { await flushPendingCoverage() }
+    }
 
-        withAnimation(.easeInOut) {
-            cameraPosition = .userLocation(followsHeading: false, fallback: .region(.defaultLockiRegion))
+    private func receive(_ delta: CoverageDelta) {
+        coverageSnapshot.apply(delta)
+        pendingDelta.formUnion(delta)
+
+        if pendingDelta.chunks.count >= 32 {
+            flushTask?.cancel()
+            flushTask = nil
+            Task { await flushPendingCoverage() }
+        } else if flushTask == nil {
+            flushTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await self?.flushPendingCoverage()
+            }
         }
     }
 
-    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let status = manager.authorizationStatus
-        Task { @MainActor in
-            self.updateLocationState(for: status)
-        }
-    }
+    private func flushPendingCoverage() async {
+        flushTask?.cancel()
+        flushTask = nil
+        guard let coverageStore, !pendingDelta.isEmpty else { return }
 
-    private var hasLocationAccess: Bool {
-        switch locationAuthorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            true
-        case .denied, .restricted, .notDetermined:
-            false
-        @unknown default:
-            false
-        }
-    }
-
-    private func updateLocationState(for authorizationStatus: CLAuthorizationStatus) {
-        locationAuthorizationStatus = authorizationStatus
-
-        switch authorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            showsUserLocation = true
-            isCameraFollowingUser = true
-            cameraPosition = .userLocation(followsHeading: false, fallback: .region(.defaultLockiRegion))
-        case .denied, .restricted, .notDetermined:
-            showsUserLocation = false
-            isCameraFollowingUser = false
-        @unknown default:
-            showsUserLocation = false
-            isCameraFollowingUser = false
+        let delta = pendingDelta
+        pendingDelta = CoverageDelta(unlockedAt: .distantPast)
+        do {
+            coverageSnapshot = try await coverageStore.merge(delta)
+            persistenceIssue = false
+        } catch {
+            pendingDelta.formUnion(delta)
+            persistenceIssue = true
         }
     }
 
     private func openAppSettings() {
-        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else {
-            return
-        }
-
+        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(settingsURL)
     }
 
-    private func updateFallbackRegionForCurrentLocale() async {
-        guard !hasLocationAccess,
-              let region = Locale.current.region,
-              let countryName = Locale.current.localizedString(forRegionCode: region.identifier) else {
-            return
-        }
-
-        do {
-            let placemarks = try await geocoder.geocodeAddressString(countryName)
-            guard !hasLocationAccess,
-                  let coordinate = placemarks.first?.location?.coordinate else {
-                return
-            }
-
-            cameraPosition = .region(
-                MKCoordinateRegion(
-                    center: coordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 8)
-                )
-            )
-        } catch {
-            cameraPosition = .region(.defaultLockiRegion)
-        }
-    }
-}
-
-private extension MKCoordinateRegion {
-    static let defaultLockiRegion = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090),
-        span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
-    )
 }

@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum LockiMapStyle: String, CaseIterable, Identifiable {
+nonisolated enum LockiMapStyle: String, CaseIterable, Identifiable, Sendable {
     case standard
     case imagery
 

@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		C41C38052FABD1E200DCA9F9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C41C37E72FABD1DE00DCA9F9 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C41C37EE2FABD1DE00DCA9F9;
+			remoteInfo = Locki;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		C41C37EF2FABD1DE00DCA9F9 /* Locki.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Locki.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C41C38002FABD1E200DCA9F9 /* LockiTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LockiTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +27,22 @@
 			path = Locki;
 			sourceTree = "<group>";
 		};
+		C41C38012FABD1E200DCA9F9 /* LockiTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LockiTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		C41C37EC2FABD1DE00DCA9F9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C41C38032FABD1E200DCA9F9 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				C41C37F12FABD1DE00DCA9F9 /* Locki */,
+				C41C38012FABD1E200DCA9F9 /* LockiTests */,
 				C41C37F02FABD1DE00DCA9F9 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				C41C37EF2FABD1DE00DCA9F9 /* Locki.app */,
+				C41C38002FABD1E200DCA9F9 /* LockiTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = C41C37EF2FABD1DE00DCA9F9 /* Locki.app */;
 			productType = "com.apple.product-type.application";
 		};
+		C41C38072FABD1E200DCA9F9 /* LockiTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C41C38082FABD1E200DCA9F9 /* Build configuration list for PBXNativeTarget "LockiTests" */;
+			buildPhases = (
+				C41C38022FABD1E200DCA9F9 /* Sources */,
+				C41C38032FABD1E200DCA9F9 /* Frameworks */,
+				C41C38042FABD1E200DCA9F9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C41C38062FABD1E200DCA9F9 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				C41C38012FABD1E200DCA9F9 /* LockiTests */,
+			);
+			name = LockiTests;
+			packageProductDependencies = (
+			);
+			productName = LockiTests;
+			productReference = C41C38002FABD1E200DCA9F9 /* LockiTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +130,10 @@
 				TargetAttributes = {
 					C41C37EE2FABD1DE00DCA9F9 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					C41C38072FABD1E200DCA9F9 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = C41C37EE2FABD1DE00DCA9F9;
 					};
 				};
 			};
@@ -100,12 +152,20 @@
 			projectRoot = "";
 			targets = (
 				C41C37EE2FABD1DE00DCA9F9 /* Locki */,
+				C41C38072FABD1E200DCA9F9 /* LockiTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		C41C37ED2FABD1DE00DCA9F9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C41C38042FABD1E200DCA9F9 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +182,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C41C38022FABD1E200DCA9F9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C41C38062FABD1E200DCA9F9 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C41C37EE2FABD1DE00DCA9F9 /* Locki */;
+			targetProxy = C41C38052FABD1E200DCA9F9 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		C41C37F82FABD1E100DCA9F9 /* Debug */ = {
@@ -257,12 +332,16 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = F2Z5AUR56U;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Configuration/Locki-Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Locki;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locki uses your location to show your current position on the map.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki continuously clear your private map in the background and during eligible system relaunches.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "{ ExplorationPrecision = \"Precise Location lets Locki clear the correct street instead of nearby unexplored places.\"; }";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locki uses your location to clear visited streets on your private map, including after you lock the screen or switch apps while exploration is active.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = location;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -277,8 +356,8 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -294,12 +373,16 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = F2Z5AUR56U;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Configuration/Locki-Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Locki;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locki uses your location to show your current position on the map.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki continuously clear your private map in the background and during eligible system relaunches.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "{ ExplorationPrecision = \"Precise Location lets Locki clear the correct street instead of nearby unexplored places.\"; }";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locki uses your location to clear visited streets on your private map, including after you lock the screen or switch apps while exploration is active.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = location;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -314,11 +397,68 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		C41C38092FABD1E200DCA9F9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = F2Z5AUR56U;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maxoliinyk.LockiTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Locki.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Locki";
+			};
+			name = Debug;
+		};
+		C41C380A2FABD1E200DCA9F9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = F2Z5AUR56U;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maxoliinyk.LockiTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Locki.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Locki";
 			};
 			name = Release;
 		};
@@ -339,6 +479,15 @@
 			buildConfigurations = (
 				C41C37FB2FABD1E100DCA9F9 /* Debug */,
 				C41C37FC2FABD1E100DCA9F9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C41C38082FABD1E200DCA9F9 /* Build configuration list for PBXNativeTarget "LockiTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C41C38092FABD1E200DCA9F9 /* Debug */,
+				C41C380A2FABD1E200DCA9F9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

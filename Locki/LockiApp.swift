@@ -5,6 +5,7 @@
 //  Created by Max Oliinyk on 06.05.2026.
 //
 
+import SwiftData
 import SwiftUI
 
 @main
@@ -13,5 +14,6 @@ struct LockiApp: App {
         WindowGroup {
             RootView()
         }
+        .modelContainer(for: [ExploredTileRecord.self, CoverageChunkRecord.self, ExplorationSummaryRecord.self])
     }
 }

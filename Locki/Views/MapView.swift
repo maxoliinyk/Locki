@@ -5,6 +5,7 @@
 //  Created by Max Oliinyk on 06.05.2026.
 //
 
+import SwiftData
 import SwiftUI
 
 struct MapView: View {
@@ -13,16 +14,25 @@ struct MapView: View {
     var body: some View {
         ZStack {
             LockiMap(viewModel: viewModel)
-//                .ignoresSafeArea()
 
-            VStack {
+            VStack(alignment: .leading) {
                 if viewModel.showsLocationOnboarding {
                     MapLocationOnboarding(viewModel: viewModel)
                 }
 
                 Spacer()
 
-                HStack {
+                HStack(alignment: .bottom) {
+                    if !viewModel.showsLocationOnboarding {
+                        StatusCard(
+                            title: viewModel.explorationStatusTitle,
+                            message: viewModel.explorationStatusMessage,
+                            systemImage: viewModel.explorationStatusSystemImage,
+                            tint: viewModel.locationTracking.state.tint
+                        )
+                        .frame(maxWidth: 300)
+                    }
+
                     Spacer()
 
                     MapControlStack(viewModel: viewModel)
@@ -38,6 +48,15 @@ private struct MapControlStack: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            if viewModel.locationTracking.state == .requiresPreciseLocation {
+                Button("Request Precise Location", systemImage: "scope") {
+                    viewModel.requestPreciseLocation()
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("Request precise location")
+                .mapChromeButton()
+            }
+
             Menu {
                 Picker("Map Style", selection: $viewModel.mapStyle) {
                     ForEach(LockiMapStyle.allCases) { style in
@@ -49,12 +68,14 @@ private struct MapControlStack: View {
                 Label("Map Style", systemImage: viewModel.mapStyle.systemImage)
                     .labelStyle(.iconOnly)
             }
+            .accessibilityLabel("Map style")
             .mapChromeButton()
 
             Button("Recenter", systemImage: "location.fill") {
                 viewModel.recenterMap()
             }
             .labelStyle(.iconOnly)
+            .accessibilityLabel("Recenter map")
             .disabled(!viewModel.canRecenterMap)
             .mapChromeButton(isEnabled: viewModel.canRecenterMap)
         }
@@ -81,6 +102,19 @@ private extension View {
     }
 }
 
+private extension LocationTrackingState {
+    var tint: Color {
+        switch self {
+        case .waitingForPermission, .stationary:
+            .secondary
+        case .active:
+            .mint
+        case .requiresPreciseLocation, .unavailable, .failed:
+            .orange
+        }
+    }
+}
+
 private struct MapLocationOnboarding: View {
     @Bindable var viewModel: MapViewModel
 
@@ -90,7 +124,7 @@ private struct MapLocationOnboarding: View {
                 .bold()
                 .foregroundStyle(.primary)
 
-            Text("Allow location access to reveal explored map tiles as you move.")
+            Text(viewModel.locationPermissionDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -108,4 +142,8 @@ private struct MapLocationOnboarding: View {
     @Previewable @State var viewModel = MapViewModel()
 
     MapView(viewModel: viewModel)
+        .modelContainer(
+            for: [ExploredTileRecord.self, CoverageChunkRecord.self, ExplorationSummaryRecord.self],
+            inMemory: true
+        )
 }

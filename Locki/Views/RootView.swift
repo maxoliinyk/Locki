@@ -5,9 +5,12 @@
 //  Created by Max Oliinyk on 06.05.2026.
 //
 
+import SwiftData
 import SwiftUI
 
 struct RootView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @State private var mapViewModel = MapViewModel()
 
     var body: some View {
@@ -28,9 +31,21 @@ struct RootView: View {
                 SettingsView(viewModel: mapViewModel)
             }
         }
+        .task {
+            mapViewModel.configurePersistence(modelContainer: modelContext.container)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                mapViewModel.flushCoverage()
+            }
+        }
     }
 }
 
 #Preview {
     RootView()
+        .modelContainer(
+            for: [ExploredTileRecord.self, CoverageChunkRecord.self, ExplorationSummaryRecord.self],
+            inMemory: true
+        )
 }
