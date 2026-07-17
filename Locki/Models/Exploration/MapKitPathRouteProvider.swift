@@ -16,13 +16,18 @@ final class MapKitPathRouteProvider: PathRouteProviding {
         var lastError: (any Error)?
 
         for mode in request.modes.prefix(2) {
+            try Task.checkCancellation()
             do {
                 candidates += try await routes(for: request, mode: mode, includeDepartureDate: true)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 lastError = error
                 guard mode != .transit else { continue }
                 do {
                     candidates += try await routes(for: request, mode: mode, includeDepartureDate: false)
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
                     lastError = error
                 }

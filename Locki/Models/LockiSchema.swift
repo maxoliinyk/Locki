@@ -105,6 +105,44 @@ enum LockiSchemaV1: VersionedSchema {
             PendingPathAnchorRecord.self,
         ]
     }
+
+    @Model
+    final class PendingPathAnchorRecord {
+        @Attribute(.unique) var id: UUID
+        var cellX: Int
+        var cellY: Int
+        var cellZoom: Int
+        var observedAt: Date
+        var accuracyBucketMeters: Int
+        var speedBucketMetersPerSecond: Int?
+        var courseBucketDegrees: Int?
+        var attemptCount: Int
+        var lastAttemptAt: Date?
+
+        init(
+            id: UUID,
+            cellX: Int,
+            cellY: Int,
+            cellZoom: Int,
+            observedAt: Date,
+            accuracyBucketMeters: Int,
+            speedBucketMetersPerSecond: Int?,
+            courseBucketDegrees: Int?,
+            attemptCount: Int,
+            lastAttemptAt: Date?
+        ) {
+            self.id = id
+            self.cellX = cellX
+            self.cellY = cellY
+            self.cellZoom = cellZoom
+            self.observedAt = observedAt
+            self.accuracyBucketMeters = accuracyBucketMeters
+            self.speedBucketMetersPerSecond = speedBucketMetersPerSecond
+            self.courseBucketDegrees = courseBucketDegrees
+            self.attemptCount = attemptCount
+            self.lastAttemptAt = lastAttemptAt
+        }
+    }
 }
 
 enum LockiSchemaV2: VersionedSchema {
@@ -130,12 +168,20 @@ enum LockiSchemaV3: VersionedSchema {
     }
 }
 
+enum LockiSchemaV4: VersionedSchema {
+    static let versionIdentifier = Schema.Version(4, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LockiSchemaV3.models.filter { $0 != LockiSchemaV1.PendingPathAnchorRecord.self }
+            + [PendingPathAnchorRecord.self]
+    }
+}
+
 enum LockiSchemaMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [LockiSchemaV0.self, LockiSchemaV1.self, LockiSchemaV2.self, LockiSchemaV3.self]
+        [LockiSchemaV0.self, LockiSchemaV1.self, LockiSchemaV2.self, LockiSchemaV3.self, LockiSchemaV4.self]
     }
 
-    static var stages: [MigrationStage] { [migrateV0toV1, migrateV1toV2, migrateV2toV3] }
+    static var stages: [MigrationStage] { [migrateV0toV1, migrateV1toV2, migrateV2toV3, migrateV3toV4] }
 
     static let migrateV0toV1 = MigrationStage.lightweight(
         fromVersion: LockiSchemaV0.self,
@@ -150,5 +196,10 @@ enum LockiSchemaMigrationPlan: SchemaMigrationPlan {
     static let migrateV2toV3 = MigrationStage.lightweight(
         fromVersion: LockiSchemaV2.self,
         toVersion: LockiSchemaV3.self
+    )
+
+    static let migrateV3toV4 = MigrationStage.lightweight(
+        fromVersion: LockiSchemaV3.self,
+        toVersion: LockiSchemaV4.self
     )
 }

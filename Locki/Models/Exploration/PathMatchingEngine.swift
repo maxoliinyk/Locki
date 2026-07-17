@@ -26,10 +26,19 @@ nonisolated struct PathMatchingEngine: Sendable {
         var suffix = [last]
         for anchor in valid.dropLast().reversed() {
             guard let next = suffix.first else { break }
+            if let anchorSession = anchor.sessionID,
+               let nextSession = next.sessionID,
+               anchorSession != nextSession {
+                break
+            }
             let duration = next.observedAt.timeIntervalSince(anchor.observedAt)
             let distance = anchor.coordinate.distance(to: next.coordinate)
+            let maximumGap = min(
+                anchor.motionKind?.maximumAnchorGap ?? PathMotionKind.unknown.maximumAnchorGap,
+                next.motionKind?.maximumAnchorGap ?? PathMotionKind.unknown.maximumAnchorGap
+            )
             guard duration > 0,
-                  duration <= configuration.maximumGap,
+                  duration <= maximumGap,
                   distance <= configuration.maximumSegmentDistanceMeters,
                   distance / duration <= configuration.maximumSpeedMetersPerSecond else {
                 break
@@ -47,6 +56,12 @@ nonisolated struct PathMatchingEngine: Sendable {
 
     func travelModes(for anchors: [PathAnchor]) -> [PathTravelMode] {
         guard anchors.count >= 2 else { return [.walking, .cycling] }
+        let motions = anchors.compactMap(\.motionKind)
+        if motions.contains(.automotive) { return [.automobile, .transit] }
+        if motions.contains(.cycling) { return [.cycling, .automobile] }
+        if motions.contains(where: { $0 == .walking || $0 == .running }) {
+            return [.walking, .cycling]
+        }
         let reported = anchors.compactMap(\.speedBucketMetersPerSecond).map(Double.init).sorted()
         let reportedMedian = reported.isEmpty ? 0 : reported[reported.count / 2]
         let elapsed = max((anchors.last?.observedAt.timeIntervalSince(anchors.first?.observedAt ?? .distantPast) ?? 0), 1)
@@ -69,7 +84,7 @@ nonisolated struct PathMatchingEngine: Sendable {
     }
 
     func decide(anchors: [PathAnchor], candidates: [PathRouteCandidate]) -> PathMatchDecision {
-        guard anchors.count >= configuration.minimumAnchorCount else { return .needsMoreEvidence }
+        guard anchors.count >= configuration.minimumAnchorCount else { return .insufficientEvidence }
         let scored = candidates.compactMap { candidate -> ScoredCandidate? in
             guard let score = score(candidate: candidate, anchors: anchors) else { return nil }
             return ScoredCandidate(candidate: candidate, score: score)
@@ -81,25 +96,117 @@ nonisolated struct PathMatchingEngine: Sendable {
             let hasStrongHeadingEvidence = headingDeviations(anchors: anchors, projections: projections).count >= 2
             let maximumDistance = projections.map(\.distanceMeters).max() ?? .infinity
             guard anchors.count >= 4 || (hasStrongHeadingEvidence && maximumDistance <= 30) else {
-                return .needsMoreEvidence
+                return .insufficientEvidence
             }
             return .matched(best.candidate)
         }
 
-        let runnerUp = scored[1]
-        if corridorsAreEquivalent(best.candidate.coordinates, runnerUp.candidate.coordinates) {
+        let credible = scored.filter { $0.score < best.score * configuration.requiredScoreSeparation }
+        if credible.dropFirst().allSatisfy({
+            corridorsAreEquivalent(best.candidate.coordinates, $0.candidate.coordinates)
+        }) {
             return .matched(best.candidate)
         }
+        let runnerUp = scored.first {
+            !corridorsAreEquivalent(best.candidate.coordinates, $0.candidate.coordinates)
+        }
+        guard let runnerUp else { return .matched(best.candidate) }
         guard runnerUp.score >= best.score * configuration.requiredScoreSeparation else {
             return .ambiguous
         }
         return .matched(best.candidate)
     }
 
+    func fallbackWindows(
+        for anchors: [PathAnchor],
+        primaryCandidates: [PathRouteCandidate] = []
+    ) -> [[PathAnchor]] {
+        guard anchors.count >= 4 else { return [] }
+        let modesPerRequest = max(travelModes(for: anchors).count, 1)
+        let remainingRequestBudget = max(configuration.maximumLogicalRouteRequests - modesPerRequest, 0)
+        let maximumLegs = min(
+            configuration.maximumLegCount,
+            remainingRequestBudget / modesPerRequest,
+            anchors.count - 1
+        )
+        guard maximumLegs >= 2 else { return [] }
+
+        var indexes: Set<Int> = [0, anchors.count - 1]
+        let rankedIndexes = (1..<(anchors.count - 1)).map { index -> (index: Int, priority: Double) in
+            let previous = anchors[index - 1]
+            let current = anchors[index]
+            var priority = primaryCandidates.compactMap {
+                project(current.coordinate, onto: $0.coordinates)?.distanceMeters
+            }.min() ?? 0
+            if previous.motionKind != nil, current.motionKind != nil,
+               previous.motionKind != current.motionKind {
+                priority += 10_000
+            }
+            if let previousCourse = previous.courseBucketDegrees,
+               let currentCourse = current.courseBucketDegrees,
+               angularDifference(Double(previousCourse), Double(currentCourse))
+                >= configuration.checkpointTurnDegrees {
+                priority += 5_000
+            }
+            return (index, priority)
+        }.sorted { $0.priority > $1.priority }
+        for item in rankedIndexes where indexes.count < maximumLegs + 1 {
+            guard item.priority > 0 else { break }
+            indexes.insert(item.index)
+        }
+        while indexes.count < maximumLegs + 1 {
+            let sorted = indexes.sorted()
+            guard let widest = zip(sorted, sorted.dropFirst()).max(by: {
+                ($0.1 - $0.0) < ($1.1 - $1.0)
+            }), widest.1 - widest.0 > 1 else { break }
+            indexes.insert((widest.0 + widest.1) / 2)
+        }
+        let sorted = indexes.sorted()
+        return zip(sorted, sorted.dropFirst()).map { start, end in
+            Array(anchors[start...end])
+        }
+    }
+
+    func stitchedCandidates(from legs: [[PathRouteCandidate]]) -> [PathRouteCandidate] {
+        guard let first = legs.first, !first.isEmpty else { return [] }
+        var beam = Array(first.prefix(configuration.candidateBeamWidth))
+        for alternatives in legs.dropFirst() {
+            var combined: [PathRouteCandidate] = []
+            for prefix in beam {
+                for suffix in alternatives.prefix(configuration.candidateBeamWidth) {
+                    guard let prefixEnd = prefix.coordinates.last,
+                          let suffixStart = suffix.coordinates.first,
+                          prefix.mode == suffix.mode,
+                          prefixEnd.distance(to: suffixStart) <= configuration.maximumCrossTrackMeters else {
+                        continue
+                    }
+                    combined.append(
+                        PathRouteCandidate(
+                            coordinates: prefix.coordinates + Array(suffix.coordinates.dropFirst()),
+                            distanceMeters: prefix.distanceMeters + suffix.distanceMeters,
+                            expectedTravelTime: prefix.expectedTravelTime + suffix.expectedTravelTime,
+                            mode: suffix.mode
+                        )
+                    )
+                }
+            }
+            beam = Array(
+                combined.sorted {
+                    if $0.distanceMeters != $1.distanceMeters { return $0.distanceMeters < $1.distanceMeters }
+                    return $0.expectedTravelTime < $1.expectedTravelTime
+                }.prefix(configuration.candidateBeamWidth)
+            )
+            if beam.isEmpty { break }
+        }
+        return beam
+    }
+
     private func score(candidate: PathRouteCandidate, anchors: [PathAnchor]) -> Double? {
         guard candidate.coordinates.count >= 2,
               candidate.distanceMeters.isFinite,
-              candidate.distanceMeters > 0 else { return nil }
+              candidate.distanceMeters > 0,
+              candidate.expectedTravelTime.isFinite,
+              candidate.expectedTravelTime >= 0 else { return nil }
         let projections = projections(of: anchors, onto: candidate.coordinates)
         guard projections.count == anchors.count else { return nil }
 
@@ -127,10 +234,33 @@ nonisolated struct PathMatchingEngine: Sendable {
         let headings = headingDeviations(anchors: anchors, projections: projections).sorted()
         if headings.count >= 2, headings[headings.count / 2] > 45 { return nil }
 
-        let meanDistance = distances.reduce(0, +) / Double(distances.count)
+        let weightedDistance = zip(anchors, projections).reduce(0.0) { partial, pair in
+            partial + pair.1.distanceMeters / Double(max(pair.0.accuracyBucketMeters, 5))
+        } / Double(anchors.count) * 10
         let detourPenalty = max(candidate.distanceMeters / max(anchorDistance, 1) - 1, 0) * 20
         let headingPenalty = headings.isEmpty ? 0 : headings[headings.count / 2] * 0.2
-        return max(meanDistance + detourPenalty + headingPenalty, 0.001)
+        let observedDuration = max(
+            anchors.last?.observedAt.timeIntervalSince(anchors.first?.observedAt ?? .distantPast) ?? 0,
+            1
+        )
+        let timePenalty: Double = if candidate.expectedTravelTime > 0 {
+            abs(log(candidate.expectedTravelTime / observedDuration)) * 8
+        } else {
+            0
+        }
+        let motionPenalty = motionPenalty(candidate.mode, anchors: anchors)
+        return max(weightedDistance + detourPenalty + headingPenalty + timePenalty + motionPenalty, 0.001)
+    }
+
+    private func motionPenalty(_ mode: PathTravelMode, anchors: [PathAnchor]) -> Double {
+        let motions = Set(anchors.compactMap(\.motionKind))
+        guard !motions.isEmpty else { return 0 }
+        let compatible = switch mode {
+        case .walking: motions.contains(.walking) || motions.contains(.running)
+        case .cycling: motions.contains(.cycling) || motions.contains(.walking) || motions.contains(.running)
+        case .automobile, .transit: motions.contains(.automotive)
+        }
+        return compatible ? 0 : 25
     }
 
     private func projections(of anchors: [PathAnchor], onto path: [GeoCoordinate]) -> [Projection] {
@@ -208,6 +338,11 @@ nonisolated struct PathMatchingEngine: Sendable {
         let vector = localVector(from: start, to: end)
         let degrees = atan2(vector.x, vector.y) * 180 / .pi
         return degrees >= 0 ? degrees : degrees + 360
+    }
+
+    private func angularDifference(_ first: Double, _ second: Double) -> Double {
+        let delta = abs(first - second).truncatingRemainder(dividingBy: 360)
+        return min(delta, 360 - delta)
     }
 }
 

@@ -21,6 +21,8 @@ final class AppRuntime {
     let trackingHealth: TrackingHealthModel
 
     private var started = false
+    private var locationRelaunchTask: Task<Void, Never>?
+    private var locationBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     init(modelContainer: ModelContainer) {
         self.modelContainer = modelContainer
@@ -37,7 +39,7 @@ final class AppRuntime {
     func start(launchedForLocation: Bool) {
         guard !started else {
             if launchedForLocation {
-                Task { await historyModel.reconcile(reason: .locationRelaunch) }
+                processLocationRelaunch()
             }
             return
         }
@@ -57,7 +59,7 @@ final class AppRuntime {
 
         if launchedForLocation {
             trackingHealth.recordPassiveEvent("Location relaunch")
-            Task { await historyModel.reconcile(reason: .locationRelaunch) }
+            processLocationRelaunch()
         }
     }
 
@@ -79,9 +81,33 @@ final class AppRuntime {
         }
         let work = Task { @MainActor [weak self] in
             let success = await self?.historyModel.performBackgroundRefresh() ?? false
-            task.setTaskCompleted(success: success)
+            let deadline = Date.now + 20
+            _ = await self?.mapViewModel.processPendingPathMatches(deadline: deadline)
+            task.setTaskCompleted(success: success && !Task.isCancelled)
         }
         task.expirationHandler = { work.cancel() }
+    }
+
+    private func processLocationRelaunch() {
+        locationRelaunchTask?.cancel()
+        endLocationBackgroundTask()
+        locationBackgroundTaskID = UIApplication.shared.beginBackgroundTask { [weak self] in
+            self?.locationRelaunchTask?.cancel()
+            self?.endLocationBackgroundTask()
+        }
+        locationRelaunchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await historyModel.reconcile(reason: .locationRelaunch)
+            _ = await mapViewModel.processPendingPathMatches(deadline: .now + 20)
+            endLocationBackgroundTask()
+            locationRelaunchTask = nil
+        }
+    }
+
+    private func endLocationBackgroundTask() {
+        guard locationBackgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(locationBackgroundTaskID)
+        locationBackgroundTaskID = .invalid
     }
 }
 

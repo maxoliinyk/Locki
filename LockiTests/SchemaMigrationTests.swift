@@ -25,7 +25,7 @@ struct SchemaMigrationTests {
         try createLegacyStore(at: storeURL, date: date)
 
         let migrated = try ModelContainer(
-            for: Schema(versionedSchema: LockiSchemaV3.self),
+            for: Schema(versionedSchema: LockiSchemaV4.self),
             migrationPlan: LockiSchemaMigrationPlan.self,
             configurations: ModelConfiguration(url: storeURL)
         )
@@ -43,6 +43,54 @@ struct SchemaMigrationTests {
         #expect(chunk.key == "18/4/5")
         #expect(chunk.maskData == Data([0xA5]))
         #expect(chunk.revision == 2)
+    }
+
+    @Test("A V3 pending path anchor migrates with conservative defaults")
+    @MainActor
+    func v3PathAnchorMigrates() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "LockiV3Migration-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "default.store")
+        let id = UUID()
+        let date = Date(timeIntervalSinceReferenceDate: 910_000)
+
+        do {
+            let old = try ModelContainer(
+                for: Schema(versionedSchema: LockiSchemaV3.self),
+                migrationPlan: LockiSchemaMigrationPlan.self,
+                configurations: ModelConfiguration(url: storeURL)
+            )
+            old.mainContext.insert(
+                LockiSchemaV1.PendingPathAnchorRecord(
+                    id: id,
+                    cellX: 10,
+                    cellY: 20,
+                    cellZoom: 21,
+                    observedAt: date,
+                    accuracyBucketMeters: 15,
+                    speedBucketMetersPerSecond: 4,
+                    courseBucketDegrees: 90,
+                    attemptCount: 2,
+                    lastAttemptAt: date
+                )
+            )
+            try old.mainContext.save()
+        }
+
+        let migrated = try ModelContainer(
+            for: Schema(versionedSchema: LockiSchemaV4.self),
+            migrationPlan: LockiSchemaMigrationPlan.self,
+            configurations: ModelConfiguration(url: storeURL)
+        )
+        let anchor = try #require(migrated.mainContext.fetch(FetchDescriptor<PendingPathAnchorRecord>()).first)
+
+        #expect(anchor.id == id)
+        #expect(anchor.anchor.source == .legacy)
+        #expect(anchor.anchor.motionKind == nil)
+        #expect(anchor.anchor.sessionID == nil)
+        #expect(anchor.nextAttemptAt == nil)
     }
 
     @MainActor

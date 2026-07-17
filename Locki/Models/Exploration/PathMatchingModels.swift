@@ -7,6 +7,40 @@
 
 import Foundation
 
+nonisolated enum PathAnchorSource: String, Codable, Hashable, Sendable {
+    case significantChange
+    case backgroundOneShot
+    case legacy
+}
+
+nonisolated enum PathMotionKind: String, Codable, Hashable, Sendable {
+    case stationary
+    case walking
+    case running
+    case cycling
+    case automotive
+    case unknown
+
+    init(_ activity: MotionActivityKind) {
+        self = switch activity {
+        case .stationary: .stationary
+        case .walking: .walking
+        case .running: .running
+        case .cycling: .cycling
+        case .automotive: .automotive
+        case .unknown: .unknown
+        }
+    }
+
+    var maximumAnchorGap: TimeInterval {
+        switch self {
+        case .walking, .running: 60 * 60
+        case .cycling, .unknown, .stationary: 30 * 60
+        case .automotive: 20 * 60
+        }
+    }
+}
+
 nonisolated struct PathAnchor: Hashable, Identifiable, Sendable {
     let id: UUID
     let cell: CoverageCell
@@ -14,6 +48,9 @@ nonisolated struct PathAnchor: Hashable, Identifiable, Sendable {
     let accuracyBucketMeters: Int
     let speedBucketMetersPerSecond: Int?
     let courseBucketDegrees: Int?
+    let source: PathAnchorSource
+    let motionKind: PathMotionKind?
+    let sessionID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -21,7 +58,10 @@ nonisolated struct PathAnchor: Hashable, Identifiable, Sendable {
         observedAt: Date,
         accuracyBucketMeters: Int,
         speedBucketMetersPerSecond: Int? = nil,
-        courseBucketDegrees: Int? = nil
+        courseBucketDegrees: Int? = nil,
+        source: PathAnchorSource = .legacy,
+        motionKind: PathMotionKind? = nil,
+        sessionID: UUID? = nil
     ) {
         self.id = id
         self.cell = cell
@@ -29,9 +69,18 @@ nonisolated struct PathAnchor: Hashable, Identifiable, Sendable {
         self.accuracyBucketMeters = accuracyBucketMeters
         self.speedBucketMetersPerSecond = speedBucketMetersPerSecond
         self.courseBucketDegrees = courseBucketDegrees
+        self.source = source
+        self.motionKind = motionKind
+        self.sessionID = sessionID
     }
 
-    init(sample: ExplorationLocationSample, configuration: ExplorationConfiguration = .streetPrecise) {
+    init(
+        sample: ExplorationLocationSample,
+        source: PathAnchorSource = .legacy,
+        motionKind: PathMotionKind? = nil,
+        sessionID: UUID? = nil,
+        configuration: ExplorationConfiguration = .streetPrecise
+    ) {
         id = UUID()
         cell = CoverageCell.containing(sample.coordinate, zoom: configuration.coverageZoom)
         observedAt = sample.timestamp
@@ -40,6 +89,9 @@ nonisolated struct PathAnchor: Hashable, Identifiable, Sendable {
         courseBucketDegrees = sample.courseDegrees.map { course in
             Int((course / 15).rounded()) * 15 % 360
         }
+        self.source = source
+        self.motionKind = motionKind
+        self.sessionID = sessionID
     }
 
     var coordinate: GeoCoordinate { cell.centerCoordinate }
@@ -72,10 +124,19 @@ protocol PathRouteProviding: AnyObject {
 }
 
 nonisolated enum PathMatchDecision: Hashable, Sendable {
-    case needsMoreEvidence
+    case insufficientEvidence
     case matched(PathRouteCandidate)
     case ambiguous
     case temporarilyUnavailable
+    case permanentlyRejected
+}
+
+nonisolated enum PathMatchFailureKind: String, Codable, Hashable, Sendable {
+    case insufficientEvidence
+    case ambiguous
+    case routeUnavailable
+    case cancelled
+    case rejected
 }
 
 nonisolated struct PathMatchingConfiguration: Hashable, Sendable {
@@ -96,6 +157,12 @@ nonisolated struct PathMatchingConfiguration: Hashable, Sendable {
     let requiredScoreSeparation: Double
     let matchedPathRadiusMeters: Double
     let matchedPathSpacingMeters: Double
+    let maximumAnchorAge: TimeInterval
+    let maximumLegCount: Int
+    let maximumLogicalRouteRequests: Int
+    let candidateBeamWidth: Int
+    let checkpointTurnDegrees: Double
+    let stationaryBoundaryInterval: TimeInterval
 
     static let standard = PathMatchingConfiguration(
         retentionInterval: 6 * 60 * 60,
@@ -114,6 +181,18 @@ nonisolated struct PathMatchingConfiguration: Hashable, Sendable {
         equivalentCorridorMeters: 20,
         requiredScoreSeparation: 1.25,
         matchedPathRadiusMeters: 10,
-        matchedPathSpacingMeters: 8
+        matchedPathSpacingMeters: 8,
+        maximumAnchorAge: 30 * 60,
+        maximumLegCount: 4,
+        maximumLogicalRouteRequests: 8,
+        candidateBeamWidth: 8,
+        checkpointTurnDegrees: 30,
+        stationaryBoundaryInterval: 5 * 60
     )
+}
+
+nonisolated enum PathProcessingResult: Hashable, Sendable {
+    case idle
+    case matched
+    case deferred(PathMatchFailureKind)
 }

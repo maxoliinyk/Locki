@@ -63,10 +63,20 @@ struct CoverageStoreTests {
             terminalAnchorID: anchor.id,
             now: now.addingTimeInterval(60)
         )
+        try await store.recordPathMatchFailure(
+            terminalAnchorID: anchor.id,
+            failure: .routeUnavailable,
+            now: now
+        )
+        let beforeRetryDate = try await store.beginPathMatchAttempt(
+            terminalAnchorID: anchor.id,
+            now: now.addingTimeInterval(14 * 60)
+        )
         let expired = try await store.pendingPathAnchors(now: now.addingTimeInterval(6 * 60 * 60 + 1))
 
         #expect(firstAttempt)
         #expect(!immediateRetry)
+        #expect(!beforeRetryDate)
         #expect(expired.isEmpty)
     }
 

@@ -73,6 +73,7 @@ final class HistoryModel {
         }
         motionService.eventHandler = { [weak self] sample in
             self?.trackingHealth?.recordPassiveEvent("Motion")
+            self?.locationTracking?.updatePathMotion(sample)
             self?.eventContinuation?.yield(.motion(sample))
         }
         placeMonitor.eventHandler = { [weak self] event in

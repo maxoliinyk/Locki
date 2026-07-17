@@ -238,6 +238,11 @@ final class MapViewModel {
         Task { await flushPendingCoverage() }
     }
 
+    func processPendingPathMatches(deadline: Date? = nil) async -> PathProcessingResult {
+        guard let pathMatchingCoordinator else { return .idle }
+        return await pathMatchingCoordinator.processPending(deadline: deadline)
+    }
+
     func deleteExplorationData() async -> Bool {
         guard let coverageStore else { return false }
         flushTask?.cancel()

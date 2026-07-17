@@ -50,7 +50,9 @@ actor CoverageStore {
         }
         try purgeExpiredPathAnchors(now: now, configuration: configuration)
         let records = try pathAnchorRecords()
-        if records.last?.cellX != anchor.cell.x || records.last?.cellY != anchor.cell.y {
+        if records.last?.cellX != anchor.cell.x
+            || records.last?.cellY != anchor.cell.y
+            || records.last?.sessionID != anchor.sessionID {
             modelContext.insert(PendingPathAnchorRecord(anchor: anchor))
             try modelContext.save()
         }
@@ -74,14 +76,27 @@ actor CoverageStore {
               record.attemptCount < configuration.maximumAttempts else {
             return false
         }
-        if let lastAttemptAt = record.lastAttemptAt,
-           now.timeIntervalSince(lastAttemptAt) < configuration.retryInterval {
+        if let nextAttemptAt = record.nextAttemptAt, now < nextAttemptAt {
             return false
         }
         record.attemptCount += 1
         record.lastAttemptAt = now
+        record.nextAttemptAt = now + configuration.retryInterval
+        record.lastFailureRawValue = nil
         try modelContext.save()
         return true
+    }
+
+    func recordPathMatchFailure(
+        terminalAnchorID: UUID,
+        failure: PathMatchFailureKind,
+        now: Date = .now,
+        configuration: PathMatchingConfiguration = .standard
+    ) throws {
+        guard let record = try pathAnchorRecords().first(where: { $0.id == terminalAnchorID }) else { return }
+        record.lastFailureRawValue = failure.rawValue
+        record.nextAttemptAt = now + configuration.retryInterval
+        try modelContext.save()
     }
 
     func commitMatchedPath(

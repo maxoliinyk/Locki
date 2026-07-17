@@ -82,6 +82,11 @@ final class PendingPathAnchorRecord {
     var courseBucketDegrees: Int?
     var attemptCount: Int
     var lastAttemptAt: Date?
+    var sourceRawValue: String? = nil
+    var motionKindRawValue: String? = nil
+    var sessionID: UUID? = nil
+    var nextAttemptAt: Date? = nil
+    var lastFailureRawValue: String? = nil
 
     init(anchor: PathAnchor) {
         id = anchor.id
@@ -94,6 +99,11 @@ final class PendingPathAnchorRecord {
         courseBucketDegrees = anchor.courseBucketDegrees
         attemptCount = 0
         lastAttemptAt = nil
+        sourceRawValue = anchor.source.rawValue
+        motionKindRawValue = anchor.motionKind?.rawValue
+        sessionID = anchor.sessionID
+        nextAttemptAt = nil
+        lastFailureRawValue = nil
     }
 
     var anchor: PathAnchor {
@@ -103,7 +113,10 @@ final class PendingPathAnchorRecord {
             observedAt: observedAt,
             accuracyBucketMeters: accuracyBucketMeters,
             speedBucketMetersPerSecond: speedBucketMetersPerSecond,
-            courseBucketDegrees: courseBucketDegrees
+            courseBucketDegrees: courseBucketDegrees,
+            source: sourceRawValue.flatMap(PathAnchorSource.init(rawValue:)) ?? .legacy,
+            motionKind: motionKindRawValue.flatMap(PathMotionKind.init(rawValue:)),
+            sessionID: sessionID
         )
     }
 }

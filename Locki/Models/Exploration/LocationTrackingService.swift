@@ -41,7 +41,13 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
 
     @ObservationIgnored private let locationManager: CLLocationManager
     @ObservationIgnored private let engine: ExplorationEngine
+    @ObservationIgnored private let sparseAnchorPolicy: SparsePathAnchorPolicy
     @ObservationIgnored private var previousSample: ExplorationLocationSample?
+    @ObservationIgnored private var previousAnchorSample: ExplorationLocationSample?
+    @ObservationIgnored private var previousAnchorMotion: PathMotionKind?
+    @ObservationIgnored private var pathSessionID: UUID?
+    @ObservationIgnored private var currentPathMotion: PathMotionKind?
+    @ObservationIgnored private var stationaryStartedAt: Date?
     @ObservationIgnored private var standardUpdatesRunning = false
     @ObservationIgnored private var significantChangeMonitoringRunning = false
     @ObservationIgnored private var visitMonitoringRunning = false
@@ -65,10 +71,12 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
 
     init(
         locationManager: CLLocationManager = CLLocationManager(),
-        engine: ExplorationEngine = ExplorationEngine()
+        engine: ExplorationEngine = ExplorationEngine(),
+        sparseAnchorPolicy: SparsePathAnchorPolicy = SparsePathAnchorPolicy()
     ) {
         self.locationManager = locationManager
         self.engine = engine
+        self.sparseAnchorPolicy = sparseAnchorPolicy
         authorizationStatus = locationManager.authorizationStatus
         accuracyAuthorization = locationManager.accuracyAuthorization
         let legacyContinuous = UserDefaults.standard.bool(forKey: Self.continuousBackgroundTrackingKey)
@@ -203,6 +211,8 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
             historyServiceSession = nil
             stopVisitMonitoring()
             stopSignificantChangeMonitoring()
+            endPathSession()
+            pathAnchorPurgeHandler?()
             beginHistoryGap(reason: .disabled)
         }
         updateLocationDelivery()
@@ -225,12 +235,12 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
             case .denied:
                 beginHistoryGap(reason: .authorization)
                 stopLocationUpdates()
-                pathAnchorPurgeHandler?()
+                endPathSession()
                 state = .unavailable(.authorizationDenied)
             case .restricted:
                 beginHistoryGap(reason: .authorization)
                 stopLocationUpdates()
-                pathAnchorPurgeHandler?()
+                endPathSession()
                 state = .unavailable(.authorizationRestricted)
             @unknown default:
                 stopLocationUpdates()
@@ -241,7 +251,14 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
-            let accepted = consume(locations)
+            let source: PathAnchorSource? = if applicationIsActive {
+                nil
+            } else if oneShotRequests.isEmpty {
+                .significantChange
+            } else {
+                .backgroundOneShot
+            }
+            let accepted = consume(locations, anchorSource: source)
             if accepted { finishAllOneShotRequests(success: true) }
         }
     }
@@ -269,6 +286,7 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
         let departure = visit.departureDate == .distantFuture ? nil : visit.departureDate
         Task { @MainActor in
             guard historyTrackingEnabled else { return }
+            endPathSession()
             historyEventHandler?(
                 .visit(
                     SystemVisitSample(
@@ -309,6 +327,7 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
         guard accuracyAuthorization == .fullAccuracy else {
             beginHistoryGap(reason: .reducedAccuracy)
             stopStandardUpdates()
+            endPathSession()
             state = .requiresPreciseLocation
             return
         }
@@ -347,6 +366,7 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
         locationManager.allowsBackgroundLocationUpdates = false
         locationManager.showsBackgroundLocationIndicator = false
         previousSample = nil
+        endPathSession()
         finishAllOneShotRequests(success: false)
     }
 
@@ -363,18 +383,24 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
 
     @discardableResult
     private func consume(_ locations: [CLLocation]) -> Bool {
+        consume(locations, anchorSource: nil)
+    }
+
+    @discardableResult
+    private func consume(_ locations: [CLLocation], anchorSource: PathAnchorSource?) -> Bool {
         guard accuracyAuthorization == .fullAccuracy else {
+            endPathSession()
             state = .requiresPreciseLocation
             return false
         }
 
-        let isSignificantChangeDelivery = !standardUpdatesRunning
         var acceptedAny = false
         for location in locations.sorted(by: { $0.timestamp < $1.timestamp }) {
             let sample = ExplorationLocationSample(location: location, hasPreciseAccuracy: true)
             let delta = engine.process(sample: sample, previous: previousSample)
+            let directSampleAccepted = engine.acceptedSample(sample)
 
-            if engine.acceptedSample(sample) {
+            if directSampleAccepted {
                 acceptedAny = true
                 endHistoryGapIfNeeded()
                 previousSample = sample
@@ -389,15 +415,74 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
                         )
                     )
                 }
-                if isSignificantChangeDelivery {
-                    pathAnchorHandler?(PathAnchor(sample: sample))
-                }
+            }
+            if let anchorSource,
+               historyTrackingEnabled,
+               sparseAnchorPolicy.accepts(sample) {
+                emitPathAnchor(sample, source: anchorSource)
+                acceptedAny = true
             }
             if !delta.isEmpty {
                 deltaHandler?(delta)
             }
         }
         return acceptedAny
+    }
+
+    func updatePathMotion(_ activity: MotionActivitySample) {
+        let motion = PathMotionKind(activity.kind)
+        if activity.isReliableStationary {
+            stationaryStartedAt = min(stationaryStartedAt ?? activity.startedAt, activity.startedAt)
+        } else if activity.isReliableMovement {
+            if let stationaryStartedAt,
+               activity.startedAt.timeIntervalSince(stationaryStartedAt)
+                >= PathMatchingConfiguration.standard.stationaryBoundaryInterval {
+                endPathSession()
+            }
+            stationaryStartedAt = nil
+        }
+        currentPathMotion = motion
+    }
+
+    func endPathSession() {
+        previousAnchorSample = nil
+        previousAnchorMotion = nil
+        pathSessionID = nil
+    }
+
+    private func emitPathAnchor(_ sample: ExplorationLocationSample, source: PathAnchorSource) {
+        if let previousAnchorSample,
+           sample.timestamp == previousAnchorSample.timestamp,
+           sample.coordinate.distance(to: previousAnchorSample.coordinate) < 1 {
+            return
+        }
+        if let stationaryStartedAt,
+           sample.timestamp.timeIntervalSince(stationaryStartedAt)
+            >= PathMatchingConfiguration.standard.stationaryBoundaryInterval {
+            endPathSession()
+            self.stationaryStartedAt = nil
+        }
+        if let previousAnchorSample,
+           !sparseAnchorPolicy.canContinue(
+                from: previousAnchorSample,
+                previousMotion: previousAnchorMotion,
+                to: sample,
+                motion: currentPathMotion
+           ) {
+            endPathSession()
+        }
+        let sessionID = pathSessionID ?? UUID()
+        pathSessionID = sessionID
+        pathAnchorHandler?(
+            PathAnchor(
+                sample: sample,
+                source: source,
+                motionKind: currentPathMotion,
+                sessionID: sessionID
+            )
+        )
+        previousAnchorSample = sample
+        previousAnchorMotion = currentPathMotion
     }
 
     func requestOneShotLocation(timeout: Duration = .seconds(12)) async -> Bool {
@@ -432,7 +517,7 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
                         state = .stationary
                         if historyTrackingEnabled { historyEventHandler?(.dwellCheck(.now)) }
                     }
-                    if let location = update.location { consume([location]) }
+                    if let location = update.location { consume([location], anchorSource: nil) }
                 }
             } catch is CancellationError {
                 // Expected when foreground or detailed tracking ends.

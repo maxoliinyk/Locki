@@ -27,7 +27,7 @@ struct LockiApp: App {
 enum LockiPersistence {
     static func makeContainer() throws -> ModelContainer {
         try ModelContainer(
-            for: Schema(versionedSchema: LockiSchemaV3.self),
+            for: Schema(versionedSchema: LockiSchemaV4.self),
             migrationPlan: LockiSchemaMigrationPlan.self
         )
     }
