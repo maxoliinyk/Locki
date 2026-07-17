@@ -31,13 +31,28 @@ struct SettingsView: View {
                         Button(
                             viewModel.showsLocationOnboarding
                                 ? viewModel.locationPermissionButtonTitle
-                                : "Enable Always Location"
+                                : "Enable Background Exploration"
                         ) {
-                            viewModel.requestLocationAccess()
+                            if viewModel.showsLocationOnboarding {
+                                viewModel.requestLocationAccess()
+                            } else {
+                                viewModel.requestBackgroundLocationAccess()
+                            }
                         }
                     }
 
-                    Text("Exploration runs whenever location access is available, including while Locki is in the background. Always access also supports eligible system relaunches. Force quitting prevents further capture until Locki is opened again.")
+                    Text("Foreground exploration is automatic. Always access enables movement-driven background updates and eligible system relaunches. Force quitting prevents further capture until Locki is opened again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle(
+                        "Continuous Background Exploration",
+                        isOn: Binding(
+                            get: { viewModel.continuousBackgroundTrackingEnabled },
+                            set: { viewModel.setContinuousBackgroundTrackingEnabled($0) }
+                        )
+                    )
+                    Text("Off by default. Efficient mode checks for meaningful movement without keeping the blue location indicator active. Continuous mode provides street-level background detail but uses more battery and shows the system indicator.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -63,7 +78,8 @@ private struct LocationPrivacyView: View {
             }
 
             Section("Background Exploration") {
-                Text("Locki continuously clears fog after you lock the screen or switch apps. iOS shows its background location indicator while location work continues.")
+                Text("Efficient background exploration is movement-driven and does not keep the blue location indicator active. iOS decides when significant movement updates are delivered.")
+                Text("Continuous Background Exploration is optional. It improves street-level background coverage, uses more battery, and displays the system location indicator.")
                 Text("Always Location supports eligible system relaunches. Force quitting prevents further capture until Locki is opened again.")
             }
 

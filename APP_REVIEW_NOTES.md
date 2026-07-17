@@ -7,9 +7,11 @@ Locki is a private fog-of-war exploration map. Location is directly used to clea
 1. Open Map and tap **Enable Exploration**.
 2. Grant **While Using the App** and **Precise Location**.
 3. Use a simulated route or move with the device. Newly visited street-level coverage becomes visible.
-4. Lock the screen or switch apps. Exploration continues while its Core Location background activity is active; iOS displays the location indicator.
-5. Locki continuously explores while permission is available; there is no separate recording mode.
-6. In Settings, **Enable Always Location** requests Always access for background continuation and eligible system relaunches. Force-quitting prevents further capture until Locki is opened again.
+4. Upgrade to **Always Location** in Settings to enable movement-driven background exploration without continuous navigation tracking.
+5. Foreground exploration runs automatically while permission is available.
+6. With Always Location, the default background mode uses significant movement updates without continuous navigation tracking.
+7. **Continuous Background Exploration** is an optional, off-by-default Settings toggle. It provides precise background coverage, uses more battery, and displays the system location indicator.
+8. Force-quitting prevents further capture until Locki is opened again.
 
 ## Privacy and battery behavior
 

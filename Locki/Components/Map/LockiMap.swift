@@ -33,7 +33,10 @@ struct LockiMap: UIViewRepresentable {
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         context.coordinator.parent = self
-        mapView.mapType = viewModel.mapStyle == .standard ? .standard : .hybridFlyover
+        let requestedMapType: MKMapType = viewModel.mapStyle == .standard ? .standard : .hybrid
+        if mapView.mapType != requestedMapType {
+            mapView.mapType = requestedMapType
+        }
         mapView.showsUserLocation = viewModel.showsUserLocation
         context.coordinator.renderer?.update(
             snapshot: viewModel.coverageSnapshot,

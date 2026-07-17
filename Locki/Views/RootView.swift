@@ -32,12 +32,14 @@ struct RootView: View {
             }
         }
         .task {
+            mapViewModel.setApplicationIsActive(scenePhase != .background)
             mapViewModel.configurePersistence(modelContainer: modelContext.container)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
                 mapViewModel.flushCoverage()
             }
+            mapViewModel.setApplicationIsActive(newPhase != .background)
         }
     }
 }

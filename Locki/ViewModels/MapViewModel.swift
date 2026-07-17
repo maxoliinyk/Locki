@@ -56,6 +56,10 @@ final class MapViewModel {
         coverageSnapshot.lastUnlockDate
     }
 
+    var continuousBackgroundTrackingEnabled: Bool {
+        locationTracking.continuousBackgroundTrackingEnabled
+    }
+
     var locationPermissionTitle: String {
         switch locationAuthorizationStatus {
         case .authorizedAlways:
@@ -85,11 +89,11 @@ final class MapViewModel {
     var locationPermissionDescription: String {
         switch locationAuthorizationStatus {
         case .authorizedAlways:
-            "Locki continuously clears your private map in the foreground and background, including eligible system relaunches."
+            "Locki explores precisely while open and checks for meaningful movement in the background. Continuous background precision is optional."
         case .authorizedWhenInUse where locationTracking.accuracyAuthorization != .fullAccuracy:
             "Turn on Precise Location so Locki clears the correct street."
         case .authorizedWhenInUse:
-            "Locki clears your private map while active and after you lock the screen or switch apps."
+            "Locki clears your private map while open. Enable Always Location for movement-driven background exploration."
         case .denied:
             "Allow location in Settings to clear the textured fog from places you visit."
         case .restricted:
@@ -188,12 +192,24 @@ final class MapViewModel {
         case .denied, .restricted:
             openAppSettings()
         default:
-            locationTracking.requestAlwaysLocationAccess()
+            locationTracking.requestForegroundLocationAccess()
         }
+    }
+
+    func requestBackgroundLocationAccess() {
+        locationTracking.requestAlwaysLocationAccess()
     }
 
     func requestPreciseLocation() {
         locationTracking.requestPreciseLocation()
+    }
+
+    func setContinuousBackgroundTrackingEnabled(_ enabled: Bool) {
+        locationTracking.setContinuousBackgroundTrackingEnabled(enabled)
+    }
+
+    func setApplicationIsActive(_ isActive: Bool) {
+        locationTracking.setApplicationIsActive(isActive)
     }
 
     func recenterMap() {

@@ -30,15 +30,19 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
     private(set) var state: LocationTrackingState
     private(set) var authorizationStatus: CLAuthorizationStatus
     private(set) var accuracyAuthorization: CLAccuracyAuthorization
+    private(set) var continuousBackgroundTrackingEnabled: Bool
 
     @ObservationIgnored var deltaHandler: ((CoverageDelta) -> Void)?
 
     @ObservationIgnored private let locationManager: CLLocationManager
     @ObservationIgnored private let engine: ExplorationEngine
     @ObservationIgnored private var previousSample: ExplorationLocationSample?
-    @ObservationIgnored private var isRunning = false
+    @ObservationIgnored private var standardUpdatesRunning = false
+    @ObservationIgnored private var significantChangeMonitoringRunning = false
+    @ObservationIgnored private var applicationIsActive = true
 
     private static let fullAccuracyPurposeKey = "ExplorationPrecision"
+    private static let continuousBackgroundTrackingKey = "exploration.continuousBackgroundTracking"
 
     init(
         locationManager: CLLocationManager = CLLocationManager(),
@@ -48,6 +52,9 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
         self.engine = engine
         authorizationStatus = locationManager.authorizationStatus
         accuracyAuthorization = locationManager.accuracyAuthorization
+        continuousBackgroundTrackingEnabled = UserDefaults.standard.bool(
+            forKey: Self.continuousBackgroundTrackingKey
+        )
         state = locationManager.authorizationStatus == .notDetermined
             ? .waitingForPermission
             : .active
@@ -81,12 +88,29 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
         beginLocationUpdates()
     }
 
+    func requestForegroundLocationAccess() {
+        switch authorizationStatus {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            beginLocationUpdates()
+        case .denied:
+            state = .unavailable(.authorizationDenied)
+        case .restricted:
+            state = .unavailable(.authorizationRestricted)
+        @unknown default:
+            state = .failed
+        }
+    }
+
     func requestAlwaysLocationAccess() {
         switch authorizationStatus {
-        case .notDetermined, .authorizedWhenInUse:
+        case .authorizedWhenInUse:
             locationManager.requestAlwaysAuthorization()
         case .authorizedAlways:
             beginLocationUpdates()
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
         case .denied:
             state = .unavailable(.authorizationDenied)
         case .restricted:
@@ -107,6 +131,21 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
                 self.beginLocationUpdates()
             }
         }
+    }
+
+    func setApplicationIsActive(_ isActive: Bool) {
+        applicationIsActive = isActive
+        updateLocationDelivery()
+    }
+
+    func setContinuousBackgroundTrackingEnabled(_ enabled: Bool) {
+        continuousBackgroundTrackingEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.continuousBackgroundTrackingKey)
+
+        if enabled, authorizationStatus != .authorizedAlways {
+            requestAlwaysLocationAccess()
+        }
+        updateLocationDelivery()
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -167,26 +206,56 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
 
         accuracyAuthorization = locationManager.accuracyAuthorization
         guard accuracyAuthorization == .fullAccuracy else {
+            stopStandardUpdates()
             state = .requiresPreciseLocation
             return
         }
 
-        if !isRunning {
-            locationManager.allowsBackgroundLocationUpdates = true
-            locationManager.showsBackgroundLocationIndicator = true
+        if !significantChangeMonitoringRunning {
             locationManager.startMonitoringSignificantLocationChanges()
-            locationManager.startUpdatingLocation()
-            isRunning = true
+            significantChangeMonitoringRunning = true
         }
+
+        updateLocationDelivery()
         state = .active
     }
 
+    private func updateLocationDelivery() {
+        guard hasLocationAccess, accuracyAuthorization == .fullAccuracy else { return }
+
+        let shouldRunStandardUpdates = applicationIsActive || continuousBackgroundTrackingEnabled
+        if shouldRunStandardUpdates, !standardUpdatesRunning {
+            locationManager.allowsBackgroundLocationUpdates = continuousBackgroundTrackingEnabled
+            locationManager.showsBackgroundLocationIndicator = continuousBackgroundTrackingEnabled
+            locationManager.startUpdatingLocation()
+            standardUpdatesRunning = true
+        } else if !shouldRunStandardUpdates, standardUpdatesRunning {
+            stopStandardUpdates()
+        } else if standardUpdatesRunning {
+            locationManager.allowsBackgroundLocationUpdates = continuousBackgroundTrackingEnabled
+            locationManager.showsBackgroundLocationIndicator = continuousBackgroundTrackingEnabled
+        }
+    }
+
     private func stopLocationUpdates() {
-        guard isRunning else { return }
-        locationManager.stopUpdatingLocation()
-        locationManager.stopMonitoringSignificantLocationChanges()
+        stopStandardUpdates()
+        if significantChangeMonitoringRunning {
+            locationManager.stopMonitoringSignificantLocationChanges()
+            significantChangeMonitoringRunning = false
+        }
+        locationManager.allowsBackgroundLocationUpdates = false
+        locationManager.showsBackgroundLocationIndicator = false
         previousSample = nil
-        isRunning = false
+    }
+
+    private func stopStandardUpdates() {
+        if standardUpdatesRunning {
+            locationManager.stopUpdatingLocation()
+            standardUpdatesRunning = false
+        }
+        locationManager.allowsBackgroundLocationUpdates = false
+        locationManager.showsBackgroundLocationIndicator = false
+        previousSample = nil
     }
 
     private func consume(_ locations: [CLLocation]) {
