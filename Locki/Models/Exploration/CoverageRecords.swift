@@ -53,16 +53,57 @@ final class ExplorationSummaryRecord {
     var exploredCellCount: Int
     var lastUnlockDate: Date?
     var migrationVersion: Int
+    var matchedPathCount: Int = 0
 
     init(
         key: String = "primary",
         exploredCellCount: Int = 0,
         lastUnlockDate: Date? = nil,
-        migrationVersion: Int = 0
+        migrationVersion: Int = 0,
+        matchedPathCount: Int = 0
     ) {
         self.key = key
         self.exploredCellCount = exploredCellCount
         self.lastUnlockDate = lastUnlockDate
         self.migrationVersion = migrationVersion
+        self.matchedPathCount = matchedPathCount
+    }
+}
+
+@Model
+final class PendingPathAnchorRecord {
+    @Attribute(.unique) var id: UUID
+    var cellX: Int
+    var cellY: Int
+    var cellZoom: Int
+    var observedAt: Date
+    var accuracyBucketMeters: Int
+    var speedBucketMetersPerSecond: Int?
+    var courseBucketDegrees: Int?
+    var attemptCount: Int
+    var lastAttemptAt: Date?
+
+    init(anchor: PathAnchor) {
+        id = anchor.id
+        cellX = anchor.cell.x
+        cellY = anchor.cell.y
+        cellZoom = anchor.cell.zoom
+        observedAt = anchor.observedAt
+        accuracyBucketMeters = anchor.accuracyBucketMeters
+        speedBucketMetersPerSecond = anchor.speedBucketMetersPerSecond
+        courseBucketDegrees = anchor.courseBucketDegrees
+        attemptCount = 0
+        lastAttemptAt = nil
+    }
+
+    var anchor: PathAnchor {
+        PathAnchor(
+            id: id,
+            cell: CoverageCell(x: cellX, y: cellY, zoom: cellZoom),
+            observedAt: observedAt,
+            accuracyBucketMeters: accuracyBucketMeters,
+            speedBucketMetersPerSecond: speedBucketMetersPerSecond,
+            courseBucketDegrees: courseBucketDegrees
+        )
     }
 }

@@ -143,7 +143,12 @@ private struct MapLocationOnboarding: View {
 
     MapView(viewModel: viewModel)
         .modelContainer(
-            for: [ExploredTileRecord.self, CoverageChunkRecord.self, ExplorationSummaryRecord.self],
+            for: [
+                ExploredTileRecord.self,
+                CoverageChunkRecord.self,
+                ExplorationSummaryRecord.self,
+                PendingPathAnchorRecord.self,
+            ],
             inMemory: true
         )
 }

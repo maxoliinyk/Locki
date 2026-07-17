@@ -14,6 +14,13 @@ struct LockiApp: App {
         WindowGroup {
             RootView()
         }
-        .modelContainer(for: [ExploredTileRecord.self, CoverageChunkRecord.self, ExplorationSummaryRecord.self])
+        .modelContainer(
+            for: [
+                ExploredTileRecord.self,
+                CoverageChunkRecord.self,
+                ExplorationSummaryRecord.self,
+                PendingPathAnchorRecord.self,
+            ]
+        )
     }
 }

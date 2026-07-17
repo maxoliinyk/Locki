@@ -49,6 +49,79 @@ struct CoverageStoreTests {
         #expect(legacyCount == 0)
     }
 
+    @Test("Pending path anchors expire and attempts are throttled")
+    @MainActor
+    func pathAnchorExpiryAndThrottle() async throws {
+        let container = try makeContainer()
+        let store = CoverageStore(modelContainer: container)
+        let now = Date(timeIntervalSinceReferenceDate: 30_000)
+        let anchor = makeAnchor(time: now)
+
+        _ = try await store.enqueuePathAnchor(anchor, now: now)
+        let firstAttempt = try await store.beginPathMatchAttempt(terminalAnchorID: anchor.id, now: now)
+        let immediateRetry = try await store.beginPathMatchAttempt(
+            terminalAnchorID: anchor.id,
+            now: now.addingTimeInterval(60)
+        )
+        let expired = try await store.pendingPathAnchors(now: now.addingTimeInterval(6 * 60 * 60 + 1))
+
+        #expect(firstAttempt)
+        #expect(!immediateRetry)
+        #expect(expired.isEmpty)
+    }
+
+    @Test("Path matching stops after the configured attempt limit")
+    @MainActor
+    func pathMatchingAttemptLimit() async throws {
+        let container = try makeContainer()
+        let store = CoverageStore(modelContainer: container)
+        let now = Date(timeIntervalSinceReferenceDate: 35_000)
+        let anchor = makeAnchor(time: now)
+        _ = try await store.enqueuePathAnchor(anchor, now: now)
+
+        for attempt in 0..<PathMatchingConfiguration.standard.maximumAttempts {
+            let attemptTime = now.addingTimeInterval(Double(attempt) * 15 * 60)
+            #expect(try await store.beginPathMatchAttempt(terminalAnchorID: anchor.id, now: attemptTime))
+        }
+        let rejected = try await store.beginPathMatchAttempt(
+            terminalAnchorID: anchor.id,
+            now: now.addingTimeInterval(6 * 15 * 60)
+        )
+        #expect(!rejected)
+    }
+
+    @Test("Matched path commit consumes anchors except its continuation seed")
+    @MainActor
+    func matchedPathCommitIsAtomic() async throws {
+        let container = try makeContainer()
+        let store = CoverageStore(modelContainer: container)
+        let now = Date(timeIntervalSinceReferenceDate: 40_000)
+        let first = makeAnchor(xOffset: 0, time: now)
+        let middle = makeAnchor(xOffset: 40, time: now.addingTimeInterval(300))
+        let last = makeAnchor(xOffset: 80, time: now.addingTimeInterval(600))
+        for anchor in [first, middle, last] {
+            _ = try await store.enqueuePathAnchor(anchor, now: anchor.observedAt)
+        }
+        var delta = CoverageDelta(unlockedAt: last.observedAt)
+        delta.insert(first.cell)
+        delta.insert(middle.cell)
+        delta.insert(last.cell)
+
+        let result = try await store.commitMatchedPath(
+            delta,
+            consuming: Set([first.id, middle.id, last.id]),
+            retaining: last.id
+        )
+        let remaining = try await store.pendingPathAnchors(now: last.observedAt)
+        let summary = try await store.summary()
+
+        #expect(result.addedCellCount == 3)
+        #expect(result.pendingAnchorCount == 1)
+        #expect(remaining.map(\.id) == [last.id])
+        #expect(summary.matchedPathCount == 1)
+        #expect(summary.exploredCellCount == 3)
+    }
+
     @MainActor
     private func makeContainer() throws -> ModelContainer {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
@@ -56,7 +129,22 @@ struct CoverageStoreTests {
             for: ExploredTileRecord.self,
             CoverageChunkRecord.self,
             ExplorationSummaryRecord.self,
+            PendingPathAnchorRecord.self,
             configurations: configuration
+        )
+    }
+
+    private func makeAnchor(xOffset: Int = 0, time: Date) -> PathAnchor {
+        let origin = CoverageCell.containing(
+            GeoCoordinate(latitude: 52.52, longitude: 13.405),
+            zoom: ExplorationConfiguration.streetPrecise.coverageZoom
+        )
+        return PathAnchor(
+            cell: CoverageCell(x: origin.x + xOffset, y: origin.y, zoom: origin.zoom),
+            observedAt: time,
+            accuracyBucketMeters: 10,
+            speedBucketMetersPerSecond: 6,
+            courseBucketDegrees: 90
         )
     }
 }

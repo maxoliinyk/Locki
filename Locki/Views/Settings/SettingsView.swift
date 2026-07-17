@@ -60,8 +60,11 @@ struct SettingsView: View {
                 Section("Exploration") {
                     Label(viewModel.explorationStatusTitle, systemImage: viewModel.explorationStatusSystemImage)
                     LabeledContent("Cleared street cells", value: viewModel.exploredTileCount.formatted())
+                    LabeledContent("Path matching", value: "Automatic")
+                    LabeledContent("Pending path anchors", value: viewModel.pendingPathAnchorCount.formatted())
+                    LabeledContent("Matched paths", value: viewModel.matchedPathCount.formatted())
                     LabeledContent("Coverage resolution", value: "Street level")
-                    LabeledContent("Storage", value: "Compact local masks")
+                    LabeledContent("Permanent storage", value: "Compact local masks")
                 }
             }
             .navigationTitle("Settings")
@@ -73,8 +76,14 @@ private struct LocationPrivacyView: View {
     var body: some View {
         List {
             Section("On Device") {
-                Text("Locki turns accepted precise locations into small explored-area mask cells, then discards the location sample. It does not save a coordinate trail, speed history, or place names.")
-                Text("Coverage masks and aggregate totals are stored locally with SwiftData. Locki has no account, analytics, advertising, or location upload.")
+                Text("Locki turns accepted precise locations into small explored-area mask cells, then discards the original location sample. It does not save a raw coordinate trail or place names.")
+                Text("Coverage masks and aggregate totals are stored locally with SwiftData. Locki has no account, analytics, advertising, or server.")
+            }
+
+            Section("Automatic Path Matching") {
+                Text("Sparse background fixes are reduced to ordered street-level cells. Locki keeps these quantized anchors for no more than six hours while it looks for one high-confidence path.")
+                Text("Locki sends only two quantized endpoints to Apple Maps for walking, cycling, driving, or transit directions. Intermediate anchors stay on this device to reject ambiguous routes.")
+                Text("After a match, Locki stores only the cleared coverage mask and deletes the consumed anchors. Returned route lines are never retained.")
             }
 
             Section("Background Exploration") {

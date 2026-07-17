@@ -33,6 +33,8 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
     private(set) var continuousBackgroundTrackingEnabled: Bool
 
     @ObservationIgnored var deltaHandler: ((CoverageDelta) -> Void)?
+    @ObservationIgnored var pathAnchorHandler: ((PathAnchor) -> Void)?
+    @ObservationIgnored var pathAnchorPurgeHandler: (() -> Void)?
 
     @ObservationIgnored private let locationManager: CLLocationManager
     @ObservationIgnored private let engine: ExplorationEngine
@@ -163,9 +165,11 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
                 state = .waitingForPermission
             case .denied:
                 stopLocationUpdates()
+                pathAnchorPurgeHandler?()
                 state = .unavailable(.authorizationDenied)
             case .restricted:
                 stopLocationUpdates()
+                pathAnchorPurgeHandler?()
                 state = .unavailable(.authorizationRestricted)
             @unknown default:
                 stopLocationUpdates()
@@ -264,6 +268,7 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
             return
         }
 
+        let isSignificantChangeDelivery = !standardUpdatesRunning
         for location in locations.sorted(by: { $0.timestamp < $1.timestamp }) {
             let sample = ExplorationLocationSample(location: location, hasPreciseAccuracy: true)
             let delta = engine.process(sample: sample, previous: previousSample)
@@ -271,6 +276,9 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate {
             if engine.acceptedSample(sample) {
                 previousSample = sample
                 state = .active
+                if isSignificantChangeDelivery {
+                    pathAnchorHandler?(PathAnchor(sample: sample))
+                }
             }
             if !delta.isEmpty {
                 deltaHandler?(delta)

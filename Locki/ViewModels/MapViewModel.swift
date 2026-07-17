@@ -18,17 +18,26 @@ final class MapViewModel {
     private(set) var coverageSnapshot: CoverageSnapshot = .empty
     private(set) var recenterRequest = 0
     private(set) var persistenceIssue = false
+    private(set) var pendingPathAnchorCount = 0
+    private(set) var matchedPathCount = 0
 
     let locationTracking: LocationTrackingService
 
     @ObservationIgnored private var coverageStore: CoverageStore?
     @ObservationIgnored private var pendingDelta = CoverageDelta(unlockedAt: .distantPast)
     @ObservationIgnored private var flushTask: Task<Void, Never>?
+    @ObservationIgnored private var pathMatchingCoordinator: PathMatchingCoordinator?
 
     init(locationTracking: LocationTrackingService = LocationTrackingService()) {
         self.locationTracking = locationTracking
         locationTracking.deltaHandler = { [weak self] delta in
             self?.receive(delta)
+        }
+        locationTracking.pathAnchorHandler = { [weak self] anchor in
+            self?.pathMatchingCoordinator?.enqueue(anchor)
+        }
+        locationTracking.pathAnchorPurgeHandler = { [weak self] in
+            self?.pathMatchingCoordinator?.purge()
         }
     }
 
@@ -176,11 +185,30 @@ final class MapViewModel {
         guard coverageStore == nil else { return }
         let store = CoverageStore(modelContainer: modelContainer)
         coverageStore = store
+        let coordinator = PathMatchingCoordinator(
+            store: store,
+            coverageHandler: { [weak self] delta, result in
+                self?.receiveMatched(delta, result: result)
+            },
+            statusHandler: { [weak self] pendingCount, matchedCount in
+                self?.pendingPathAnchorCount = pendingCount
+                self?.matchedPathCount = matchedCount
+            },
+            persistenceIssueHandler: { [weak self] hasIssue in
+                self?.persistenceIssue = hasIssue
+            }
+        )
+        pathMatchingCoordinator = coordinator
         locationTracking.start()
 
         Task {
             do {
                 coverageSnapshot = try await store.prepare()
+                let summary = try await store.summary()
+                let anchors = try await store.pendingPathAnchors()
+                matchedPathCount = summary.matchedPathCount
+                pendingPathAnchorCount = anchors.count
+                coordinator.resume()
             } catch {
                 persistenceIssue = true
             }
@@ -210,6 +238,7 @@ final class MapViewModel {
 
     func setApplicationIsActive(_ isActive: Bool) {
         locationTracking.setApplicationIsActive(isActive)
+        if isActive { pathMatchingCoordinator?.resume() }
     }
 
     func recenterMap() {
@@ -236,6 +265,13 @@ final class MapViewModel {
                 await self?.flushPendingCoverage()
             }
         }
+    }
+
+    private func receiveMatched(_ delta: CoverageDelta, result: PathMatchCommitResult) {
+        coverageSnapshot.apply(delta)
+        pendingPathAnchorCount = result.pendingAnchorCount
+        matchedPathCount = result.matchedPathCount
+        persistenceIssue = false
     }
 
     private func flushPendingCoverage() async {

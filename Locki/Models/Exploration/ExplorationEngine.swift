@@ -83,6 +83,30 @@ nonisolated struct ExplorationEngine: Sendable {
         return delta
     }
 
+    func process(
+        matchedPath coordinates: [GeoCoordinate],
+        unlockedAt: Date,
+        radiusMeters: Double = PathMatchingConfiguration.standard.matchedPathRadiusMeters,
+        spacingMeters: Double = PathMatchingConfiguration.standard.matchedPathSpacingMeters
+    ) -> CoverageDelta {
+        var delta = CoverageDelta(unlockedAt: unlockedAt)
+        guard let first = coordinates.first, first.isValid, radiusMeters > 0, spacingMeters > 0 else {
+            return delta
+        }
+
+        rasterizeDisk(center: first, radiusMeters: radiusMeters, into: &delta)
+        for (start, end) in zip(coordinates, coordinates.dropFirst()) where start.isValid && end.isValid {
+            let distance = start.distance(to: end)
+            guard distance.isFinite, distance <= 100_000 else { continue }
+            let steps = max(Int(ceil(distance / spacingMeters)), 1)
+            for step in 1...steps {
+                let coordinate = start.interpolated(to: end, fraction: Double(step) / Double(steps))
+                rasterizeDisk(center: coordinate, radiusMeters: radiusMeters, into: &delta)
+            }
+        }
+        return delta
+    }
+
     private func shouldConnect(_ previous: ExplorationLocationSample, to sample: ExplorationLocationSample) -> Bool {
         let timeDelta = sample.timestamp.timeIntervalSince(previous.timestamp)
         guard timeDelta > 0, timeDelta <= configuration.maximumConnectionAge else { return false }

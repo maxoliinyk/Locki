@@ -117,6 +117,7 @@ nonisolated struct ExplorationLocationSample: Hashable, Sendable {
     let coordinate: GeoCoordinate
     let horizontalAccuracyMeters: Double
     let speedMetersPerSecond: Double?
+    let courseDegrees: Double?
     let timestamp: Date
     let hasPreciseAccuracy: Bool
 
@@ -124,12 +125,14 @@ nonisolated struct ExplorationLocationSample: Hashable, Sendable {
         coordinate: GeoCoordinate,
         horizontalAccuracyMeters: Double,
         speedMetersPerSecond: Double? = nil,
+        courseDegrees: Double? = nil,
         timestamp: Date,
         hasPreciseAccuracy: Bool = true
     ) {
         self.coordinate = coordinate
         self.horizontalAccuracyMeters = horizontalAccuracyMeters
         self.speedMetersPerSecond = speedMetersPerSecond
+        self.courseDegrees = courseDegrees
         self.timestamp = timestamp
         self.hasPreciseAccuracy = hasPreciseAccuracy
     }
@@ -139,6 +142,7 @@ nonisolated struct ExplorationLocationSample: Hashable, Sendable {
             coordinate: GeoCoordinate(location.coordinate),
             horizontalAccuracyMeters: location.horizontalAccuracy,
             speedMetersPerSecond: location.speed >= 0 ? location.speed : nil,
+            courseDegrees: location.course >= 0 && location.courseAccuracy >= 0 ? location.course : nil,
             timestamp: location.timestamp,
             hasPreciseAccuracy: hasPreciseAccuracy
         )

@@ -336,7 +336,7 @@
 				INFOPLIST_FILE = Configuration/Locki-Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Locki;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki continuously clear your private map in the background and during eligible system relaunches.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki clear your private map from movement and infer high-confidence paths between sparse background updates.";
 				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "{ ExplorationPrecision = \"Precise Location lets Locki clear the correct street instead of nearby unexplored places.\"; }";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locki uses your location to clear visited streets on your private map, including after you lock the screen or switch apps while exploration is active.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -377,7 +377,7 @@
 				INFOPLIST_FILE = Configuration/Locki-Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Locki;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki continuously clear your private map in the background and during eligible system relaunches.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Always Location lets Locki clear your private map from movement and infer high-confidence paths between sparse background updates.";
 				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "{ ExplorationPrecision = \"Precise Location lets Locki clear the correct street instead of nearby unexplored places.\"; }";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Locki uses your location to clear visited streets on your private map, including after you lock the screen or switch apps while exploration is active.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

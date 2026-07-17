@@ -21,7 +21,7 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.navigation</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Always Location lets Locki continuously clear your private map in the background and during eligible system relaunches.</string>
+	<string>Always Location lets Locki clear your private map from movement and infer high-confidence paths between sparse background updates.</string>
 	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
 	<dict>
 		<key>ExplorationPrecision</key>
