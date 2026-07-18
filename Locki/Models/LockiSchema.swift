@@ -159,6 +159,21 @@ enum LockiSchemaV2: VersionedSchema {
             HistoryGapRecord.self,
         ]
     }
+
+    @Model
+    final class HistoryGapRecord {
+        @Attribute(.unique) var id: UUID
+        var startedAt: Date
+        var endedAt: Date?
+        var reasonRawValue: String
+
+        init(id: UUID, startedAt: Date, endedAt: Date?, reasonRawValue: String) {
+            self.id = id
+            self.startedAt = startedAt
+            self.endedAt = endedAt
+            self.reasonRawValue = reasonRawValue
+        }
+    }
 }
 
 enum LockiSchemaV3: VersionedSchema {
@@ -176,12 +191,29 @@ enum LockiSchemaV4: VersionedSchema {
     }
 }
 
+enum LockiSchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        LockiSchemaV4.models.filter { $0 != LockiSchemaV2.HistoryGapRecord.self }
+            + [HistoryGapRecord.self]
+    }
+}
+
 enum LockiSchemaMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [LockiSchemaV0.self, LockiSchemaV1.self, LockiSchemaV2.self, LockiSchemaV3.self, LockiSchemaV4.self]
+        [
+            LockiSchemaV0.self,
+            LockiSchemaV1.self,
+            LockiSchemaV2.self,
+            LockiSchemaV3.self,
+            LockiSchemaV4.self,
+            LockiSchemaV5.self,
+        ]
     }
 
-    static var stages: [MigrationStage] { [migrateV0toV1, migrateV1toV2, migrateV2toV3, migrateV3toV4] }
+    static var stages: [MigrationStage] {
+        [migrateV0toV1, migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5]
+    }
 
     static let migrateV0toV1 = MigrationStage.lightweight(
         fromVersion: LockiSchemaV0.self,
@@ -201,5 +233,10 @@ enum LockiSchemaMigrationPlan: SchemaMigrationPlan {
     static let migrateV3toV4 = MigrationStage.lightweight(
         fromVersion: LockiSchemaV3.self,
         toVersion: LockiSchemaV4.self
+    )
+
+    static let migrateV4toV5 = MigrationStage.lightweight(
+        fromVersion: LockiSchemaV4.self,
+        toVersion: LockiSchemaV5.self
     )
 }

@@ -113,7 +113,14 @@ actor BackupStore {
                 id: gap.id,
                 startedAt: gap.startedAt,
                 endedAt: endedAt,
-                reasonRawValue: gap.reasonRawValue
+                reasonRawValue: gap.reasonRawValue,
+                diagnosisRawValue: gap.diagnosisRawValue,
+                resolutionRawValue: gap.resolutionRawValue,
+                resolvedAt: gap.resolvedAt,
+                travelModeRawValue: gap.travelModeRawValue,
+                estimatedDistanceMeters: gap.estimatedDistanceMeters,
+                estimatedTravelTime: gap.estimatedTravelTime,
+                estimatedRoute: gap.estimatedRoute.map(BackupGapCoordinate.init)
             )
         }
         let preferences = try modelContext.fetch(FetchDescriptor<PlaceSuggestionPreferenceRecord>()).map {
@@ -306,14 +313,22 @@ actor BackupStore {
         var gapIDs = Set(try modelContext.fetch(FetchDescriptor<HistoryGapRecord>()).map(\.id))
         for gap in payload.gaps where !gapIDs.contains(gap.id) {
             let reason = HistoryGapReason(rawValue: gap.reasonRawValue) ?? .unavailable
-            modelContext.insert(
-                HistoryGapRecord(
-                    id: gap.id,
-                    startedAt: gap.startedAt,
-                    endedAt: gap.endedAt ?? max(gap.startedAt, envelope.exportedAt),
-                    reason: reason
-                )
+            let record = HistoryGapRecord(
+                id: gap.id,
+                startedAt: gap.startedAt,
+                endedAt: gap.endedAt ?? max(gap.startedAt, envelope.exportedAt),
+                reason: reason,
+                diagnosis: gap.diagnosisRawValue.flatMap(HistoryGapDiagnosis.init(rawValue:))
             )
+            record.resolutionRawValue = gap.resolutionRawValue ?? HistoryGapResolution.unresolved.rawValue
+            record.resolvedAt = gap.resolvedAt
+            record.travelModeRawValue = gap.travelModeRawValue
+            record.estimatedDistanceMeters = gap.estimatedDistanceMeters
+            record.estimatedTravelTime = gap.estimatedTravelTime
+            if let route = gap.estimatedRoute, !route.isEmpty {
+                record.estimatedRouteData = try HistoryGapRouteCodec.encode(route.map(\.coordinate))
+            }
+            modelContext.insert(record)
             gapIDs.insert(gap.id)
             insertedGaps += 1
         }

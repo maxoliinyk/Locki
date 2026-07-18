@@ -14,7 +14,7 @@ extension UTType {
 
 nonisolated struct LockiBackupEnvelope: Codable, Equatable, Sendable {
     static let identifier = "com.maxoliinyk.Locki.backup"
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let identifier: String
     let schemaVersion: Int
@@ -153,6 +153,56 @@ nonisolated struct BackupGap: Codable, Equatable, Sendable {
     let startedAt: Date
     let endedAt: Date?
     let reasonRawValue: String
+    let diagnosisRawValue: String?
+    let resolutionRawValue: String?
+    let resolvedAt: Date?
+    let travelModeRawValue: String?
+    let estimatedDistanceMeters: Double?
+    let estimatedTravelTime: TimeInterval?
+    let estimatedRoute: [BackupGapCoordinate]?
+
+    init(
+        id: UUID,
+        startedAt: Date,
+        endedAt: Date?,
+        reasonRawValue: String,
+        diagnosisRawValue: String? = nil,
+        resolutionRawValue: String? = nil,
+        resolvedAt: Date? = nil,
+        travelModeRawValue: String? = nil,
+        estimatedDistanceMeters: Double? = nil,
+        estimatedTravelTime: TimeInterval? = nil,
+        estimatedRoute: [BackupGapCoordinate]? = nil
+    ) {
+        self.id = id
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.reasonRawValue = reasonRawValue
+        self.diagnosisRawValue = diagnosisRawValue
+        self.resolutionRawValue = resolutionRawValue
+        self.resolvedAt = resolvedAt
+        self.travelModeRawValue = travelModeRawValue
+        self.estimatedDistanceMeters = estimatedDistanceMeters
+        self.estimatedTravelTime = estimatedTravelTime
+        self.estimatedRoute = estimatedRoute
+    }
+}
+
+nonisolated struct BackupGapCoordinate: Codable, Equatable, Sendable {
+    let latitudeE5: Int32
+    let longitudeE5: Int32
+
+    init(_ coordinate: GeoCoordinate) {
+        latitudeE5 = Int32((coordinate.latitude * 100_000).rounded())
+        longitudeE5 = Int32((coordinate.longitude * 100_000).rounded())
+    }
+
+    var coordinate: GeoCoordinate {
+        GeoCoordinate(
+            latitude: Double(latitudeE5) / 100_000,
+            longitude: Double(longitudeE5) / 100_000
+        )
+    }
 }
 
 nonisolated struct BackupSuggestionPreference: Codable, Equatable, Sendable {
@@ -252,7 +302,7 @@ nonisolated enum BackupArchiveCodec {
         guard envelope.identifier == LockiBackupEnvelope.identifier else {
             throw BackupArchiveError.wrongIdentifier
         }
-        guard envelope.schemaVersion == LockiBackupEnvelope.currentSchemaVersion else {
+        guard (1...LockiBackupEnvelope.currentSchemaVersion).contains(envelope.schemaVersion) else {
             throw BackupArchiveError.unsupportedVersion(envelope.schemaVersion)
         }
 
@@ -260,8 +310,10 @@ nonisolated enum BackupArchiveCodec {
         let recordCount = payload.coverage.count + payload.trajectory.count + payload.trips.count
             + payload.visits.count + payload.places.count + payload.routes.count
             + payload.gaps.count + payload.suggestionPreferences.count
-        guard recordCount <= maximumRecordCount,
-              payload.trajectory.reduce(0, { $0 + $1.points.count }) <= maximumPointCount else {
+        let pointCount = payload.trajectory.reduce(0) { $0 + $1.points.count }
+            + payload.routes.reduce(0) { $0 + $1.representativePoints.count }
+            + payload.gaps.reduce(0) { $0 + ($1.estimatedRoute?.count ?? 0) }
+        guard recordCount <= maximumRecordCount, pointCount <= maximumPointCount else {
             throw BackupArchiveError.tooManyRecords
         }
 
@@ -304,7 +356,8 @@ nonisolated enum BackupArchiveCodec {
         guard payload.places.allSatisfy({ validCoordinate($0.latitude, $0.longitude) && validRadius($0.radiusMeters) }),
               payload.visits.allSatisfy({ validCoordinate($0.latitude, $0.longitude) && validRadius($0.radiusMeters) }),
               payload.trajectory.flatMap(\.points).allSatisfy(validPoint),
-              payload.routes.flatMap(\.representativePoints).allSatisfy(validPoint) else {
+              payload.routes.flatMap(\.representativePoints).allSatisfy(validPoint),
+              payload.gaps.flatMap({ $0.estimatedRoute ?? [] }).allSatisfy(validGapCoordinate) else {
             throw BackupArchiveError.invalidCoordinate
         }
 
@@ -328,6 +381,9 @@ nonisolated enum BackupArchiveCodec {
               payload.gaps.allSatisfy({
                   validRange(start: $0.startedAt, end: $0.endedAt, latestAllowedDate: latestAllowedDate)
                       && ($0.endedAt != nil || $0.startedAt <= envelope.exportedAt)
+                      && ($0.resolvedAt.map {
+                          validDate($0, latestAllowedDate: latestAllowedDate)
+                      } ?? true)
               }),
               payload.trajectory.flatMap(\.points).allSatisfy({
                   validDate(
@@ -368,7 +424,18 @@ nonisolated enum BackupArchiveCodec {
                 && MovementMode(rawValue: $0.modeRawValue) != nil
         }), payload.visits.allSatisfy({
             $0.quality.isFinite && (0...1).contains($0.quality) && !$0.sourceRawValue.isEmpty
-        }), payload.gaps.allSatisfy({ HistoryGapReason(rawValue: $0.reasonRawValue) != nil }),
+        }), payload.gaps.allSatisfy({ gap in
+            guard HistoryGapReason(rawValue: gap.reasonRawValue) != nil,
+                  gap.diagnosisRawValue.map({ HistoryGapDiagnosis(rawValue: $0) != nil }) ?? true,
+                  gap.resolutionRawValue.map({ HistoryGapResolution(rawValue: $0) != nil }) ?? true,
+                  gap.travelModeRawValue.map({ HistoryGapTravelMode(rawValue: $0) != nil }) ?? true,
+                  gap.estimatedDistanceMeters.map(validNonnegative) ?? true,
+                  gap.estimatedTravelTime.map(validNonnegative) ?? true else { return false }
+            if gap.resolutionRawValue == HistoryGapResolution.confirmedRoute.rawValue {
+                return (gap.estimatedRoute?.count ?? 0) >= 2
+            }
+            return true
+        }),
               payload.suggestionPreferences.allSatisfy({ PlaceLabelSuggestion(rawValue: $0.dismissedSuggestionRawValue) != nil }),
               payload.places.allSatisfy({
                   !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -399,6 +466,11 @@ nonisolated enum BackupArchiveCodec {
             && (-18_000_000...18_000_000).contains(point.longitudeE5)
             && point.courseFiveDegrees.map({ $0 < 72 }) ?? true
             && !point.timeZoneIdentifier.isEmpty
+    }
+
+    private static func validGapCoordinate(_ coordinate: BackupGapCoordinate) -> Bool {
+        (-9_000_000...9_000_000).contains(coordinate.latitudeE5)
+            && (-18_000_000...18_000_000).contains(coordinate.longitudeE5)
     }
 
     private static func validRange(start: Date, end: Date?, latestAllowedDate: Date) -> Bool {

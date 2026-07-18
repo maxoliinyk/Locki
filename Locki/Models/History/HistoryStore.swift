@@ -19,7 +19,7 @@ actor HistoryStore {
     private let reducer = TrajectoryReducer()
     private let visitEngine = VisitInferenceEngine()
     private let routeEngine = RouteSimilarityEngine()
-    private let currentInferenceVersion = 4
+    private let currentInferenceVersion = 5
     private var latestMotion: MotionActivitySample?
     private var stationarySince: Date?
 
@@ -80,7 +80,12 @@ actor HistoryStore {
             try closeOpenTrip(metadata: metadata, at: start, completeness: 0.75)
             resetCandidate(metadata)
             clearSegmentContinuity(metadata)
-            try addGap(start: start, end: end, reason: reason)
+            try addGap(
+                start: start,
+                end: end,
+                reason: reason,
+                diagnosis: defaultDiagnosis(for: reason)
+            )
         }
         try modelContext.save()
         return try overview()
@@ -92,6 +97,7 @@ actor HistoryStore {
         let places = try modelContext.fetch(FetchDescriptor<HistoryPlaceRecord>())
         let days = try modelContext.fetch(FetchDescriptor<HistoryDailySummaryRecord>())
         let gaps = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+            .filter { $0.resolution != .noMovement }
         let metadata = try metadata()
         let referenceNow = metadata.lastProcessedAt ?? .now
         return HistoryOverview(
@@ -175,6 +181,140 @@ actor HistoryStore {
         return try overview()
     }
 
+    func gapSnapshot(id: UUID) throws -> HistoryGapSnapshot? {
+        guard let gap = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+            .first(where: { $0.id == id }) else { return nil }
+        let points = try modelContext.fetch(FetchDescriptor<TrajectoryChunkRecord>())
+            .flatMap(\.points)
+        let startPoint = points
+            .filter {
+                $0.timestamp <= gap.startedAt.addingTimeInterval(1)
+                    && gap.startedAt.timeIntervalSince($0.timestamp) <= 60
+            }
+            .max { $0.timestamp < $1.timestamp }
+        let endPoint = gap.endedAt.flatMap { endedAt in
+            points
+                .filter {
+                    $0.timestamp >= endedAt.addingTimeInterval(-1)
+                        && $0.timestamp.timeIntervalSince(endedAt) <= 60
+                }
+                .min { $0.timestamp < $1.timestamp }
+        }
+        let start = startPoint.map(HistoryGapEndpoint.init)
+        let end = endPoint.map(HistoryGapEndpoint.init)
+        let modes = try modelContext.fetch(FetchDescriptor<HistoryTripRecord>())
+            .filter { trip in
+                abs((trip.endedAt ?? trip.startedAt).timeIntervalSince(gap.startedAt)) <= 60
+                    || gap.endedAt.map { gapEnd in
+                        abs(trip.startedAt.timeIntervalSince(gapEnd)) <= 60
+                    } == true
+            }
+            .map(\.mode)
+        let assessment = HistoryGapAssessmentEngine().assess(
+            reason: gap.reason,
+            startedAt: gap.startedAt,
+            endedAt: gap.endedAt,
+            start: start,
+            end: end,
+            surroundingModes: modes
+        )
+        return HistoryGapSnapshot(
+            id: gap.id,
+            startedAt: gap.startedAt,
+            endedAt: gap.endedAt,
+            reason: gap.reason,
+            diagnosis: gap.diagnosis ?? gap.reason.defaultDiagnosis,
+            resolution: gap.resolution,
+            resolvedAt: gap.resolvedAt,
+            travelMode: gap.travelMode,
+            estimatedDistanceMeters: gap.estimatedDistanceMeters,
+            estimatedTravelTime: gap.estimatedTravelTime,
+            estimatedRoute: gap.estimatedRoute,
+            assessment: assessment
+        )
+    }
+
+    func resolveGapRoute(id: UUID, suggestion: GapRouteSuggestion, at date: Date = .now) throws {
+        guard let gap = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+            .first(where: { $0.id == id }) else { return }
+        gap.resolutionRawValue = HistoryGapResolution.confirmedRoute.rawValue
+        gap.resolvedAt = date
+        gap.travelModeRawValue = suggestion.mode.rawValue
+        gap.estimatedDistanceMeters = suggestion.distanceMeters
+        gap.estimatedTravelTime = suggestion.expectedTravelTime
+        gap.estimatedRouteData = try HistoryGapRouteCodec.encode(suggestion.coordinates)
+        try modelContext.save()
+    }
+
+    func resolveGapNoMovement(id: UUID, at date: Date = .now) throws {
+        guard let gap = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+            .first(where: { $0.id == id }) else { return }
+        clearGapResolution(gap)
+        gap.resolutionRawValue = HistoryGapResolution.noMovement.rawValue
+        gap.resolvedAt = date
+        try rebuildDailySummaries()
+        try modelContext.save()
+    }
+
+    func dismissGap(id: UUID, at date: Date = .now) throws {
+        guard let gap = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+            .first(where: { $0.id == id }) else { return }
+        clearGapResolution(gap)
+        gap.resolutionRawValue = HistoryGapResolution.dismissed.rawValue
+        gap.resolvedAt = date
+        try modelContext.save()
+    }
+
+    func restoreGap(id: UUID) throws {
+        guard let gap = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+            .first(where: { $0.id == id }) else { return }
+        clearGapResolution(gap)
+        try rebuildDailySummaries()
+        try modelContext.save()
+    }
+
+    func applyGapBatch(
+        ids: Set<UUID>,
+        action: HistoryGapBatchAction,
+        at date: Date = .now
+    ) throws -> HistoryGapBatchResult {
+        guard !ids.isEmpty else {
+            return HistoryGapBatchResult(requestedCount: 0, appliedIDs: [])
+        }
+
+        do {
+            var appliedIDs = Set<UUID>()
+            try modelContext.transaction {
+                let gaps = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+                    .filter { ids.contains($0.id) }
+                for gap in gaps where canApply(action, to: gap) {
+                    clearGapResolution(gap)
+                    switch action {
+                    case .noMovement:
+                        gap.resolutionRawValue = HistoryGapResolution.noMovement.rawValue
+                        gap.resolvedAt = date
+                    case .dismiss:
+                        gap.resolutionRawValue = HistoryGapResolution.dismissed.rawValue
+                        gap.resolvedAt = date
+                    case .restore:
+                        break
+                    }
+                    appliedIDs.insert(gap.id)
+                }
+                if !appliedIDs.isEmpty {
+                    if action == .noMovement || action == .restore {
+                        try rebuildDailySummaries()
+                    }
+                    try modelContext.save()
+                }
+            }
+            return HistoryGapBatchResult(requestedCount: ids.count, appliedIDs: appliedIDs)
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
     func deleteHistory(from start: Date? = nil, to end: Date? = nil) throws -> HistoryOverview {
         let lower = start ?? .distantPast
         let upper = end ?? .distantFuture
@@ -242,12 +382,22 @@ actor HistoryStore {
         where gap.startedAt < upper && (gap.endedAt ?? .distantFuture) >= lower {
             let gapEnd = gap.endedAt ?? .distantFuture
             if gap.startedAt < lower, gapEnd > upper {
-                modelContext.insert(HistoryGapRecord(startedAt: upper, endedAt: gap.endedAt, reason: gap.reason))
+                modelContext.insert(
+                    HistoryGapRecord(
+                        startedAt: upper,
+                        endedAt: gap.endedAt,
+                        reason: gap.reason,
+                        diagnosis: gap.diagnosis
+                    )
+                )
                 gap.endedAt = lower
+                clearGapResolution(gap)
             } else if gap.startedAt < lower {
                 gap.endedAt = lower
+                clearGapResolution(gap)
             } else if gapEnd > upper {
                 gap.startedAt = upper
+                clearGapResolution(gap)
             } else {
                 modelContext.delete(gap)
             }
@@ -430,6 +580,13 @@ actor HistoryStore {
             }
             lines.append("</trkseg></trk>")
         }
+        for gap in export.gaps where gap.resolution == .confirmedRoute && gap.estimatedRoute.count >= 2 {
+            lines.append("<trk><name>Estimated route</name><type>estimated</type><trkseg>")
+            for coordinate in gap.estimatedRoute {
+                lines.append("<trkpt lat=\"\(coordinate.latitude)\" lon=\"\(coordinate.longitude)\"></trkpt>")
+            }
+            lines.append("</trkseg></trk>")
+        }
         lines.append("</gpx>")
         return Data(lines.joined(separator: "\n").utf8)
     }
@@ -448,9 +605,15 @@ actor HistoryStore {
         var segmentPrevious = lastPoint(from: metadata)
         let effectiveSample = sampleWithInferredSpeed(sample, previous: segmentPrevious)
         let point = HistoryPoint(sample: effectiveSample)
-        if let previous = segmentPrevious, !filter.formsPlausibleSegment(from: previous, to: point) {
+        if let previous = segmentPrevious,
+           let diagnosis = filter.discontinuityDiagnosis(from: previous, to: point) {
             try closeOpenTrip(metadata: metadata, at: previous.timestamp, completeness: 0.75)
-            try addGap(start: previous.timestamp, end: point.timestamp, reason: .discontinuity)
+            try addGap(
+                start: previous.timestamp,
+                end: point.timestamp,
+                reason: .discontinuity,
+                diagnosis: diagnosis
+            )
             segmentPrevious = nil
         }
 
@@ -1003,7 +1166,8 @@ actor HistoryStore {
         for visit in try modelContext.fetch(FetchDescriptor<HistoryVisitRecord>()) where !visit.isExcluded {
             try addVisitToDailySummaries(visit, now: referenceNow)
         }
-        for gap in try modelContext.fetch(FetchDescriptor<HistoryGapRecord>()) {
+        for gap in try modelContext.fetch(FetchDescriptor<HistoryGapRecord>())
+        where gap.resolution != .noMovement {
             guard let endedAt = gap.endedAt, endedAt > gap.startedAt else { continue }
             try addGapDuration(from: gap.startedAt, to: endedAt)
         }
@@ -1039,13 +1203,19 @@ actor HistoryStore {
         return summary
     }
 
-    private func addGap(start: Date, end: Date?, reason: HistoryGapReason) throws {
+    private func addGap(
+        start: Date,
+        end: Date?,
+        reason: HistoryGapReason,
+        diagnosis: HistoryGapDiagnosis? = nil
+    ) throws {
         guard end == nil || end! > start else { return }
         if let end,
            let open = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>()).first(where: {
                $0.reason == reason && $0.endedAt == nil && abs($0.startedAt.timeIntervalSince(start)) < 1
            }) {
             open.endedAt = end
+            open.diagnosisRawValue = open.diagnosisRawValue ?? diagnosis?.rawValue
             try addGapDuration(from: open.startedAt, to: end)
             return
         }
@@ -1055,9 +1225,47 @@ actor HistoryStore {
                 && $0.endedAt == end
         }
         guard !duplicate else { return }
-        modelContext.insert(HistoryGapRecord(startedAt: start, endedAt: end, reason: reason))
+        modelContext.insert(
+            HistoryGapRecord(
+                startedAt: start,
+                endedAt: end,
+                reason: reason,
+                diagnosis: diagnosis ?? defaultDiagnosis(for: reason)
+            )
+        )
         if let end {
             try addGapDuration(from: start, to: end)
+        }
+    }
+
+    private func defaultDiagnosis(for reason: HistoryGapReason) -> HistoryGapDiagnosis {
+        switch reason {
+        case .authorization: .permissionUnavailable
+        case .reducedAccuracy: .preciseLocationUnavailable
+        case .discontinuity: .unknownDiscontinuity
+        case .disabled: .historyDisabled
+        case .persistence: .saveFailed
+        case .unavailable: .locationTemporarilyUnavailable
+        }
+    }
+
+    private func clearGapResolution(_ gap: HistoryGapRecord) {
+        gap.resolutionRawValue = HistoryGapResolution.unresolved.rawValue
+        gap.resolvedAt = nil
+        gap.travelModeRawValue = nil
+        gap.estimatedDistanceMeters = nil
+        gap.estimatedTravelTime = nil
+        gap.estimatedRouteData = nil
+    }
+
+    private func canApply(_ action: HistoryGapBatchAction, to gap: HistoryGapRecord) -> Bool {
+        switch action {
+        case .noMovement:
+            gap.reason == .discontinuity && gap.resolution == .unresolved
+        case .dismiss:
+            gap.resolution == .unresolved
+        case .restore:
+            gap.resolution != .unresolved
         }
     }
 
@@ -1357,10 +1565,21 @@ actor HistoryStore {
             )
         }
         let gaps = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>()).map {
-            ExportedGap(startedAt: $0.startedAt, endedAt: $0.endedAt, reason: $0.reason)
+            ExportedGap(
+                startedAt: $0.startedAt,
+                endedAt: $0.endedAt,
+                reason: $0.reason,
+                diagnosis: $0.diagnosis,
+                resolution: $0.resolution,
+                resolvedAt: $0.resolvedAt,
+                travelMode: $0.travelMode,
+                estimatedDistanceMeters: $0.estimatedDistanceMeters,
+                estimatedTravelTime: $0.estimatedTravelTime,
+                estimatedRoute: $0.estimatedRoute
+            )
         }
         return HistoryExport(
-            schemaVersion: 1,
+            schemaVersion: 2,
             exportedAt: .now,
             trips: trips,
             visits: visits,

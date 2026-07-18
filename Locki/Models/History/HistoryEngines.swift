@@ -35,15 +35,27 @@ nonisolated struct HistorySampleFilter: Sendable {
     }
 
     func formsPlausibleSegment(from previous: HistoryPoint, to current: HistoryPoint) -> Bool {
+        discontinuityDiagnosis(from: previous, to: current) == nil
+    }
+
+    func discontinuityDiagnosis(
+        from previous: HistoryPoint,
+        to current: HistoryPoint
+    ) -> HistoryGapDiagnosis? {
         let duration = current.timestamp.timeIntervalSince(previous.timestamp)
-        guard duration > 0, duration <= configuration.tripGapInterval else { return false }
+        guard duration > 0, duration <= configuration.tripGapInterval else {
+            return .prolongedUpdateInterval
+        }
         let distance = previous.coordinate.distance(to: current.coordinate)
         let inferredSpeed = distance / duration
         guard inferredSpeed.isFinite, inferredSpeed <= configuration.maximumSpeedMetersPerSecond else {
-            return false
+            return .implausibleLocationJump
         }
         let reported = max(previous.speedMetersPerSecond ?? 0, current.speedMetersPerSecond ?? 0)
-        return reported == 0 || inferredSpeed <= max(20, reported * 2 + 10)
+        guard reported == 0 || inferredSpeed <= max(20, reported * 2 + 10) else {
+            return .implausibleLocationJump
+        }
+        return nil
     }
 }
 

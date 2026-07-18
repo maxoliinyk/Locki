@@ -17,6 +17,65 @@ nonisolated enum HistoryGapReason: String, Codable, Hashable, Sendable {
     case unavailable
 }
 
+nonisolated enum HistoryGapDiagnosis: String, Codable, Hashable, Sendable {
+    case prolongedUpdateInterval
+    case implausibleLocationJump
+    case permissionUnavailable
+    case preciseLocationUnavailable
+    case historyDisabled
+    case saveFailed
+    case locationTemporarilyUnavailable
+    case unknownDiscontinuity
+}
+
+nonisolated enum HistoryGapResolution: String, Codable, Hashable, Sendable {
+    case unresolved
+    case dismissed
+    case noMovement
+    case confirmedRoute
+}
+
+nonisolated enum HistoryGapBatchAction: Hashable, Sendable {
+    case noMovement
+    case dismiss
+    case restore
+}
+
+nonisolated struct HistoryGapBatchResult: Hashable, Sendable {
+    let requestedCount: Int
+    let appliedIDs: Set<UUID>
+
+    var appliedCount: Int { appliedIDs.count }
+    var skippedCount: Int { max(requestedCount - appliedCount, 0) }
+}
+
+nonisolated enum HistoryGapTravelMode: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
+    case walking
+    case cycling
+    case automobile
+    case transit
+
+    var id: String { rawValue }
+
+    var pathTravelMode: PathTravelMode {
+        switch self {
+        case .walking: .walking
+        case .cycling: .cycling
+        case .automobile: .automobile
+        case .transit: .transit
+        }
+    }
+
+    init(_ mode: PathTravelMode) {
+        self = switch mode {
+        case .walking: .walking
+        case .cycling: .cycling
+        case .automobile: .automobile
+        case .transit: .transit
+        }
+    }
+}
+
 nonisolated enum HistoryEvent: Hashable, Sendable {
     case sample(HistoryLocationSample)
     case visit(SystemVisitSample)
@@ -287,4 +346,11 @@ nonisolated struct ExportedGap: Codable, Sendable {
     let startedAt: Date
     let endedAt: Date?
     let reason: HistoryGapReason
+    let diagnosis: HistoryGapDiagnosis?
+    let resolution: HistoryGapResolution
+    let resolvedAt: Date?
+    let travelMode: HistoryGapTravelMode?
+    let estimatedDistanceMeters: Double?
+    let estimatedTravelTime: TimeInterval?
+    let estimatedRoute: [GeoCoordinate]
 }

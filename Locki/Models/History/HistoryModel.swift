@@ -25,6 +25,9 @@ final class HistoryModel {
     private(set) var persistenceIssue = false
     private(set) var isExporting = false
     private(set) var exportURL: URL?
+    private(set) var gapRouteSuggestions: [UUID: [GapRouteSuggestion]] = [:]
+    private(set) var gapRouteLoadingIDs: Set<UUID> = []
+    private(set) var gapRouteFailureIDs: Set<UUID> = []
 
     @ObservationIgnored private var store: HistoryStore?
     @ObservationIgnored private weak var locationTracking: LocationTrackingService?
@@ -39,10 +42,14 @@ final class HistoryModel {
     @ObservationIgnored private var backgroundRefresh: (any BackgroundRefreshScheduling)?
     @ObservationIgnored private var trackingHealth: TrackingHealthModel?
     @ObservationIgnored private var isBackupImportPaused = false
+    @ObservationIgnored private let gapRouteProvider: any GapRouteProviding
+    @ObservationIgnored private var gapRouteTasks: [UUID: Task<[GapRouteCandidate], Error>] = [:]
+    @ObservationIgnored private var gapRouteRequestIDs: [UUID: UUID] = [:]
 
     private static let historyEnabledKey = "history.enabled"
 
-    init() {
+    init(gapRouteProvider: any GapRouteProviding = MapKitGapRouteProvider()) {
+        self.gapRouteProvider = gapRouteProvider
         isEnabled = UserDefaults.standard.bool(forKey: Self.historyEnabledKey)
     }
 
@@ -151,6 +158,138 @@ final class HistoryModel {
             persistenceIssue = false
         } catch {
             persistenceIssue = true
+        }
+    }
+
+    func gapSnapshot(id: UUID) async -> HistoryGapSnapshot? {
+        do {
+            let snapshot = try await store?.gapSnapshot(id: id)
+            persistenceIssue = false
+            return snapshot
+        } catch {
+            persistenceIssue = true
+            return nil
+        }
+    }
+
+    @discardableResult
+    func findGapRoutes(id: UUID, mode: HistoryGapTravelMode) async -> Bool {
+        guard let snapshot = await gapSnapshot(id: id),
+              snapshot.assessment.canRequestRoutes,
+              let start = snapshot.assessment.start,
+              let end = snapshot.assessment.end,
+              let distance = snapshot.assessment.directDistanceMeters,
+              let duration = snapshot.duration else { return false }
+        cancelGapRouteRequest(id: id)
+        gapRouteLoadingIDs.insert(id)
+        gapRouteFailureIDs.remove(id)
+        gapRouteSuggestions[id] = []
+        let requestID = UUID()
+        gapRouteRequestIDs[id] = requestID
+        let task = Task {
+            try await gapRouteProvider.routes(
+                from: start.coordinate,
+                to: end.coordinate,
+                departureDate: snapshot.startedAt,
+                mode: mode
+            )
+        }
+        gapRouteTasks[id] = task
+        defer {
+            if gapRouteRequestIDs[id] == requestID {
+                gapRouteTasks[id] = nil
+                gapRouteRequestIDs[id] = nil
+                gapRouteLoadingIDs.remove(id)
+            }
+        }
+        do {
+            let candidates = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            try Task.checkCancellation()
+            let suggestions = HistoryGapAssessmentEngine().rankedSuggestions(
+                candidates,
+                gapDuration: duration,
+                directDistanceMeters: distance
+            )
+            guard gapRouteRequestIDs[id] == requestID else { return false }
+            gapRouteSuggestions[id] = suggestions
+            if suggestions.isEmpty { gapRouteFailureIDs.insert(id) }
+            return !suggestions.isEmpty
+        } catch is CancellationError {
+            return false
+        } catch {
+            if gapRouteRequestIDs[id] == requestID { gapRouteFailureIDs.insert(id) }
+            return false
+        }
+    }
+
+    func cancelGapRouteRequest(id: UUID) {
+        gapRouteTasks[id]?.cancel()
+        gapRouteTasks[id] = nil
+        gapRouteRequestIDs[id] = nil
+        gapRouteLoadingIDs.remove(id)
+    }
+
+    func confirmGapRoute(id: UUID, suggestion: GapRouteSuggestion) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.resolveGapRoute(id: id, suggestion: suggestion)
+            gapRouteSuggestions[id] = []
+            persistenceIssue = false
+            return true
+        } catch {
+            persistenceIssue = true
+            return false
+        }
+    }
+
+    func markGapAsNoMovement(id: UUID) async -> Bool {
+        await mutateGap { try await $0.resolveGapNoMovement(id: id) }
+    }
+
+    func dismissGap(id: UUID) async -> Bool {
+        await mutateGap { try await $0.dismissGap(id: id) }
+    }
+
+    func restoreGap(id: UUID) async -> Bool {
+        await mutateGap { try await $0.restoreGap(id: id) }
+    }
+
+    func applyGapBatch(
+        ids: Set<UUID>,
+        action: HistoryGapBatchAction
+    ) async -> HistoryGapBatchResult? {
+        guard let store else { return nil }
+        do {
+            let result = try await store.applyGapBatch(ids: ids, action: action)
+            for id in result.appliedIDs {
+                cancelGapRouteRequest(id: id)
+                gapRouteSuggestions[id] = []
+                gapRouteFailureIDs.remove(id)
+            }
+            persistenceIssue = false
+            return result
+        } catch {
+            persistenceIssue = true
+            return nil
+        }
+    }
+
+    private func mutateGap(
+        _ operation: (HistoryStore) async throws -> Void
+    ) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await operation(store)
+            overview = try await store.overview()
+            persistenceIssue = false
+            return true
+        } catch {
+            persistenceIssue = true
+            return false
         }
     }
 

@@ -54,6 +54,7 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
     @ObservationIgnored private var applicationIsActive = true
     @ObservationIgnored private var historyGapStartedAt: Date?
     @ObservationIgnored private var historyGapReason: HistoryGapReason?
+    @ObservationIgnored private var pendingUnavailableGapTask: Task<Void, Never>?
     @ObservationIgnored private var historyServiceSession: CLServiceSession?
     @ObservationIgnored private var backgroundActivitySession: CLBackgroundActivitySession?
     @ObservationIgnored private var liveUpdateTask: Task<Void, Never>?
@@ -267,7 +268,7 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
         let locationError = error as? CLError
         Task { @MainActor in
             if locationError?.code == .locationUnknown {
-                beginHistoryGap(reason: .unavailable)
+                scheduleUnavailableGap()
                 state = .unavailable(.locationUnavailable)
             } else if locationError?.code == .denied {
                 beginHistoryGap(reason: .authorization)
@@ -556,6 +557,8 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
     }
 
     private func beginHistoryGap(reason: HistoryGapReason) {
+        pendingUnavailableGapTask?.cancel()
+        pendingUnavailableGapTask = nil
         guard historyTrackingEnabled, historyGapStartedAt == nil else { return }
         let start = Date.now
         historyGapStartedAt = start
@@ -564,10 +567,28 @@ final class LocationTrackingService: NSObject, CLLocationManagerDelegate, OneSho
     }
 
     private func endHistoryGapIfNeeded() {
+        pendingUnavailableGapTask?.cancel()
+        pendingUnavailableGapTask = nil
         guard let start = historyGapStartedAt else { return }
         let reason = historyGapReason ?? .unavailable
         historyGapStartedAt = nil
         historyGapReason = nil
         historyEventHandler?(.gap(start: start, end: .now, reason: reason))
+    }
+
+    private func scheduleUnavailableGap() {
+        guard historyTrackingEnabled,
+              historyGapStartedAt == nil,
+              pendingUnavailableGapTask == nil else { return }
+        let startedAt = Date.now
+        pendingUnavailableGapTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(HistoryGapCapturePolicy.unavailableDelay)) }
+            catch { return }
+            guard let self, historyTrackingEnabled, historyGapStartedAt == nil else { return }
+            pendingUnavailableGapTask = nil
+            historyGapStartedAt = startedAt
+            historyGapReason = .unavailable
+            historyEventHandler?(.gap(start: startedAt, end: nil, reason: .unavailable))
+        }
     }
 }

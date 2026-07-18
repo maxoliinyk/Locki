@@ -25,7 +25,7 @@ struct SchemaMigrationTests {
         try createLegacyStore(at: storeURL, date: date)
 
         let migrated = try ModelContainer(
-            for: Schema(versionedSchema: LockiSchemaV4.self),
+            for: Schema(versionedSchema: LockiSchemaV5.self),
             migrationPlan: LockiSchemaMigrationPlan.self,
             configurations: ModelConfiguration(url: storeURL)
         )
@@ -80,7 +80,7 @@ struct SchemaMigrationTests {
         }
 
         let migrated = try ModelContainer(
-            for: Schema(versionedSchema: LockiSchemaV4.self),
+            for: Schema(versionedSchema: LockiSchemaV5.self),
             migrationPlan: LockiSchemaMigrationPlan.self,
             configurations: ModelConfiguration(url: storeURL)
         )
@@ -91,6 +91,46 @@ struct SchemaMigrationTests {
         #expect(anchor.anchor.motionKind == nil)
         #expect(anchor.anchor.sessionID == nil)
         #expect(anchor.nextAttemptAt == nil)
+    }
+
+    @Test("A V4 tracking gap migrates as unresolved")
+    @MainActor
+    func v4GapMigrates() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "LockiV4GapMigration-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "default.store")
+        let id = UUID()
+        let date = Date(timeIntervalSinceReferenceDate: 920_000)
+
+        do {
+            let old = try ModelContainer(
+                for: Schema(versionedSchema: LockiSchemaV4.self),
+                migrationPlan: LockiSchemaMigrationPlan.self,
+                configurations: ModelConfiguration(url: storeURL)
+            )
+            old.mainContext.insert(
+                LockiSchemaV2.HistoryGapRecord(
+                    id: id,
+                    startedAt: date,
+                    endedAt: date + 60,
+                    reasonRawValue: HistoryGapReason.discontinuity.rawValue
+                )
+            )
+            try old.mainContext.save()
+        }
+
+        let migrated = try ModelContainer(
+            for: Schema(versionedSchema: LockiSchemaV5.self),
+            migrationPlan: LockiSchemaMigrationPlan.self,
+            configurations: ModelConfiguration(url: storeURL)
+        )
+        let gap = try #require(migrated.mainContext.fetch(FetchDescriptor<HistoryGapRecord>()).first)
+
+        #expect(gap.id == id)
+        #expect(gap.resolution == .unresolved)
+        #expect(gap.diagnosis == nil)
     }
 
     @MainActor

@@ -295,15 +295,69 @@ final class HistoryGapRecord {
     var startedAt: Date
     var endedAt: Date?
     var reasonRawValue: String
+    var diagnosisRawValue: String?
+    var resolutionRawValue: String = HistoryGapResolution.unresolved.rawValue
+    var resolvedAt: Date?
+    var travelModeRawValue: String?
+    var estimatedDistanceMeters: Double?
+    var estimatedTravelTime: TimeInterval?
+    @Attribute(.externalStorage) var estimatedRouteData: Data?
 
-    init(id: UUID = UUID(), startedAt: Date, endedAt: Date?, reason: HistoryGapReason) {
+    init(
+        id: UUID = UUID(),
+        startedAt: Date,
+        endedAt: Date?,
+        reason: HistoryGapReason,
+        diagnosis: HistoryGapDiagnosis? = nil
+    ) {
         self.id = id
         self.startedAt = startedAt
         self.endedAt = endedAt
         reasonRawValue = reason.rawValue
+        diagnosisRawValue = diagnosis?.rawValue
     }
 
     var reason: HistoryGapReason { HistoryGapReason(rawValue: reasonRawValue) ?? .unavailable }
+    var diagnosis: HistoryGapDiagnosis? { diagnosisRawValue.flatMap(HistoryGapDiagnosis.init(rawValue:)) }
+    var resolution: HistoryGapResolution {
+        HistoryGapResolution(rawValue: resolutionRawValue) ?? .unresolved
+    }
+    var travelMode: HistoryGapTravelMode? {
+        travelModeRawValue.flatMap(HistoryGapTravelMode.init(rawValue:))
+    }
+    var estimatedRoute: [GeoCoordinate] {
+        guard let estimatedRouteData else { return [] }
+        return (try? HistoryGapRouteCodec.decode(estimatedRouteData)) ?? []
+    }
+}
+
+nonisolated enum HistoryGapRouteCodec {
+    static func encode(_ coordinates: [GeoCoordinate]) throws -> Data {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        return try encoder.encode(coordinates.map(QuantizedGapCoordinate.init))
+    }
+
+    static func decode(_ data: Data) throws -> [GeoCoordinate] {
+        try PropertyListDecoder().decode([QuantizedGapCoordinate].self, from: data).map(\.coordinate)
+    }
+}
+
+nonisolated private struct QuantizedGapCoordinate: Codable, Sendable {
+    let latitudeE5: Int32
+    let longitudeE5: Int32
+
+    init(_ coordinate: GeoCoordinate) {
+        latitudeE5 = Int32((coordinate.latitude * 100_000).rounded())
+        longitudeE5 = Int32((coordinate.longitude * 100_000).rounded())
+    }
+
+    var coordinate: GeoCoordinate {
+        GeoCoordinate(
+            latitude: Double(latitudeE5) / 100_000,
+            longitude: Double(longitudeE5) / 100_000
+        )
+    }
 }
 
 nonisolated enum HistoryPointCodec {

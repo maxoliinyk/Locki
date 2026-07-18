@@ -37,6 +37,9 @@ struct BackupArchiveTests {
         #expect(days.count == 1)
         #expect(days.first?.distanceMeters == 1_200)
         #expect(days.first?.visitCount == 1)
+        let restoredGap = try #require(target.mainContext.fetch(FetchDescriptor<HistoryGapRecord>()).first)
+        #expect(restoredGap.resolution == .confirmedRoute)
+        #expect(restoredGap.estimatedRoute.count == 2)
     }
 
     @Test("Export contains delayed points by expanding the trip interval")
@@ -311,9 +314,23 @@ struct BackupArchiveTests {
         route.isManuallyEdited = true
         trip.routePatternID = route.id
         container.mainContext.insert(route)
-        container.mainContext.insert(
-            HistoryGapRecord(id: UUID(), startedAt: now - 900, endedAt: now - 600, reason: .unavailable)
+        let gap = HistoryGapRecord(
+            id: UUID(),
+            startedAt: now - 900,
+            endedAt: now - 600,
+            reason: .discontinuity,
+            diagnosis: .prolongedUpdateInterval
         )
+        gap.resolutionRawValue = HistoryGapResolution.confirmedRoute.rawValue
+        gap.resolvedAt = now - 500
+        gap.travelModeRawValue = HistoryGapTravelMode.walking.rawValue
+        gap.estimatedDistanceMeters = 250
+        gap.estimatedTravelTime = 240
+        gap.estimatedRouteData = try HistoryGapRouteCodec.encode([
+            GeoCoordinate(latitude: 52.52, longitude: 13.40),
+            GeoCoordinate(latitude: 52.52, longitude: 13.404),
+        ])
+        container.mainContext.insert(gap)
         container.mainContext.insert(
             PlaceSuggestionPreferenceRecord(placeID: place.id, dismissedSuggestionRawValue: PlaceLabelSuggestion.home.rawValue)
         )

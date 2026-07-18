@@ -21,6 +21,11 @@ struct JournalView: View {
     @State private var anchorDate = Date.now
     @State private var pendingDeletion: JournalDeletion?
     @State private var showsDeletionError = false
+    @State private var showsDismissedGaps = false
+    @State private var isSelectingGaps = false
+    @State private var selectedGapIDs = Set<UUID>()
+    @State private var pendingBatchAction: HistoryGapBatchAction?
+    @State private var batchFeedback: JournalBatchFeedback?
 
     private var earliestHistoryDate: Date {
         [
@@ -63,7 +68,7 @@ struct JournalView: View {
         }
     }
 
-    private var periodGaps: [HistoryGapRecord] {
+    private var periodGapRecords: [HistoryGapRecord] {
         gaps.filter {
             JournalPresentation.overlaps(
                 start: $0.startedAt,
@@ -73,10 +78,31 @@ struct JournalView: View {
         }
     }
 
+    private var periodGaps: [HistoryGapRecord] {
+        periodGapRecords.filter { $0.resolution != .noMovement }
+    }
+
+    private var displayedGaps: [HistoryGapRecord] {
+        periodGaps.filter { showsDismissedGaps || $0.resolution != .dismissed }
+    }
+
+    private var dismissedGapCount: Int {
+        periodGaps.filter { $0.resolution == .dismissed }.count
+    }
+
+    private var hasPeriodHistory: Bool {
+        !periodTrips.isEmpty || !periodVisits.isEmpty || !periodGaps.isEmpty
+    }
+
     private var timeline: [JournalTimelineItem] {
+        let gapItems = displayedGaps.map { JournalTimelineItem.gap($0) }
+        guard !isSelectingGaps else {
+            return gapItems.sorted {
+                $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date
+            }
+        }
         let tripItems = periodTrips.map { JournalTimelineItem.trip($0) }
         let visitItems = periodVisits.map { JournalTimelineItem.visit($0) }
-        let gapItems = periodGaps.map { JournalTimelineItem.gap($0) }
         return (tripItems + visitItems + gapItems).sorted {
             $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date
         }
@@ -106,6 +132,13 @@ struct JournalView: View {
         }
     }
 
+    private var estimatedMapRoutes: [JournalMapRoute] {
+        periodGaps.compactMap { gap in
+            guard gap.resolution == .confirmedRoute, gap.estimatedRoute.count >= 2 else { return nil }
+            return JournalMapRoute(gapID: gap.id, coordinates: gap.estimatedRoute)
+        }
+    }
+
     private var mapPointLimit: Int {
         switch selectedPeriod {
         case .day: 2_500
@@ -132,11 +165,12 @@ struct JournalView: View {
             List {
                 periodControls
 
-                if !timeline.isEmpty {
-                    if !periodTrips.isEmpty || !periodVisits.isEmpty {
+                if hasPeriodHistory {
+                    if !isSelectingGaps && (!periodTrips.isEmpty || !periodVisits.isEmpty) {
                         Section {
                             JournalRangeMap(
                                 routes: mapRoutes,
+                                estimatedRoutes: estimatedMapRoutes,
                                 visits: mapVisits
                             )
                             .id(mapID)
@@ -162,19 +196,33 @@ struct JournalView: View {
                         LabeledContent("Trips", value: periodTrips.count.formatted())
                         if !periodGaps.isEmpty {
                             Label(
-                                "History contains \(periodGaps.count) tracking gap\(periodGaps.count == 1 ? "" : "s")",
+                                "History contains \(periodGaps.count) incomplete interval\(periodGaps.count == 1 ? "" : "s")",
                                 systemImage: "exclamationmark.triangle"
                             )
                                 .foregroundStyle(.orange)
                         }
-                    }
-
-                    if selectedPeriod == .day {
-                        Section("Timeline") {
-                            ForEach(timeline) { item in
-                                timelineRow(item)
+                        if dismissedGapCount > 0 {
+                            Button(showsDismissedGaps ? "Hide Dismissed Gaps" : "Show \(dismissedGapCount) Dismissed Gap\(dismissedGapCount == 1 ? "" : "s")") {
+                                showsDismissedGaps.toggle()
                             }
                         }
+                    }
+
+                    if timeline.isEmpty {
+                        Section {
+                            ContentUnavailableView(
+                                "Dismissed Gaps Hidden",
+                                systemImage: "eye.slash",
+                                description: Text("Show dismissed gaps in Summary to select or restore them.")
+                            )
+                        }
+                        .listRowBackground(Color.clear)
+                    } else if selectedPeriod == .day {
+                            Section("Timeline") {
+                                ForEach(timeline) { item in
+                                    timelineRow(item)
+                                }
+                            }
                     } else {
                         ForEach(timelineSections) { section in
                             Section {
@@ -202,8 +250,16 @@ struct JournalView: View {
                     .listRowBackground(Color.clear)
                 }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if isSelectingGaps { gapBatchActionBar }
+            }
             .navigationTitle("Journal")
+            .toolbar { gapSelectionToolbar }
             .task { await historyModel.refresh() }
+            .onChange(of: mapID) { _, _ in endGapSelection() }
+            .onChange(of: showsDismissedGaps) { _, _ in
+                selectedGapIDs.formIntersection(displayedGaps.map(\.id))
+            }
         }
         .confirmationDialog(
             pendingDeletion?.title ?? "Delete history item?",
@@ -224,11 +280,116 @@ struct JournalView: View {
         } message: { deletion in
             Text(deletion.message)
         }
+        .confirmationDialog(
+            batchConfirmationTitle,
+            isPresented: Binding(
+                get: { pendingBatchAction != nil },
+                set: { if !$0 { pendingBatchAction = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingBatchAction
+        ) { action in
+            Button(action.title, role: action == .dismiss ? .destructive : nil) {
+                Task { await performBatchAction(action) }
+            }
+        } message: { action in
+            Text(action.confirmationMessage)
+        }
         .alert("Couldn’t Delete History", isPresented: $showsDeletionError) {
             Button("OK") {}
         } message: {
             Text("Locki couldn’t save this change. Your history item may still be present.")
         }
+        .alert(item: $batchFeedback) { feedback in
+            Alert(
+                title: Text(feedback.title),
+                message: Text(feedback.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var gapSelectionToolbar: some ToolbarContent {
+        if !displayedGaps.isEmpty {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(
+                    isSelectingGaps ? "Done" : "Select Gaps",
+                    systemImage: isSelectingGaps ? "checkmark" : "checklist"
+                ) {
+                    if isSelectingGaps { endGapSelection() }
+                    else { isSelectingGaps = true }
+                }
+            }
+        }
+
+        if isSelectingGaps {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(allDisplayedGapsSelected ? "Deselect All" : "Select All") {
+                    if allDisplayedGapsSelected { selectedGapIDs.removeAll() }
+                    else { selectedGapIDs = Set(displayedGaps.map(\.id)) }
+                }
+                .disabled(displayedGaps.isEmpty)
+            }
+        }
+    }
+
+    private var gapBatchActionBar: some View {
+        VStack {
+            Text("\(selectedGapIDs.count) gap\(selectedGapIDs.count == 1 ? "" : "s") selected")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    batchActionButton(.noMovement)
+                    batchActionButton(.dismiss)
+                    if eligibleSelectedGapCount(for: .restore) > 0 {
+                        batchActionButton(.restore)
+                    }
+                }
+                VStack {
+                    batchActionButton(.noMovement)
+                    batchActionButton(.dismiss)
+                    if eligibleSelectedGapCount(for: .restore) > 0 {
+                        batchActionButton(.restore)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Divider() }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func batchActionButton(_ action: HistoryGapBatchAction) -> some View {
+        let eligibleCount = eligibleSelectedGapCount(for: action)
+        return Button {
+            pendingBatchAction = action
+        } label: {
+            Label(
+                eligibleCount == selectedGapIDs.count
+                    ? action.shortTitle
+                    : "\(action.shortTitle) (\(eligibleCount))",
+                systemImage: action.systemImage
+            )
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.bordered)
+        .tint(action == .dismiss ? .red : .accentColor)
+        .disabled(eligibleCount == 0)
+        .accessibilityLabel("\(action.title), \(eligibleCount) eligible gaps")
+    }
+
+    private var batchConfirmationTitle: String {
+        guard let pendingBatchAction else { return "Update selected gaps?" }
+        return pendingBatchAction.confirmationTitle(
+            count: eligibleSelectedGapCount(for: pendingBatchAction)
+        )
     }
 
     private var periodControls: some View {
@@ -333,16 +494,75 @@ struct JournalView: View {
             }
 
         case .gap(let gap):
-            JournalRow(
-                icon: "exclamationmark.triangle.fill",
-                title: "Tracking gap",
-                subtitle: gap.reason.displayName,
-                date: gap.startedAt,
-                timeZoneIdentifier: TimeZone.current.identifier,
-                warning: gap.endedAt == nil ? "Ongoing" : nil
-            )
-            .foregroundStyle(.orange)
+            if isSelectingGaps {
+                Button {
+                    toggleGapSelection(gap.id)
+                } label: {
+                    HStack {
+                        Image(systemName: selectedGapIDs.contains(gap.id) ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .foregroundStyle(selectedGapIDs.contains(gap.id) ? Color.accentColor : Color.secondary)
+                            .accessibilityHidden(true)
+                        gapRow(gap)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Select \(gap.resolution.title) at \(gap.startedAt.formatted(date: .abbreviated, time: .shortened))")
+                .accessibilityValue(selectedGapIDs.contains(gap.id) ? "Selected" : "Not selected")
+                .accessibilityHint("Adds or removes this gap from the batch")
+            } else {
+                NavigationLink {
+                    GapDetailView(gapID: gap.id, historyModel: historyModel)
+                } label: {
+                    gapRow(gap)
+                }
+            }
         }
+    }
+
+    private func gapRow(_ gap: HistoryGapRecord) -> some View {
+        JournalRow(
+            icon: gap.resolution == .confirmedRoute
+                ? "point.topleft.down.to.point.bottomright.curvepath"
+                : "exclamationmark.triangle.fill",
+            title: gap.resolution.title,
+            subtitle: gap.journalSubtitle,
+            date: gap.startedAt,
+            timeZoneIdentifier: TimeZone.current.identifier,
+            warning: gap.endedAt == nil ? "Ongoing" : nil
+        )
+    }
+
+    private var allDisplayedGapsSelected: Bool {
+        !displayedGaps.isEmpty && displayedGaps.allSatisfy { selectedGapIDs.contains($0.id) }
+    }
+
+    private func toggleGapSelection(_ id: UUID) {
+        if selectedGapIDs.contains(id) { selectedGapIDs.remove(id) }
+        else { selectedGapIDs.insert(id) }
+    }
+
+    private func endGapSelection() {
+        isSelectingGaps = false
+        selectedGapIDs.removeAll()
+        pendingBatchAction = nil
+    }
+
+    private func eligibleSelectedGapCount(for action: HistoryGapBatchAction) -> Int {
+        periodGapRecords.filter { gap in
+            selectedGapIDs.contains(gap.id) && action.canApply(to: gap)
+        }.count
+    }
+
+    private func performBatchAction(_ action: HistoryGapBatchAction) async {
+        let selectedIDs = selectedGapIDs
+        guard let result = await historyModel.applyGapBatch(ids: selectedIDs, action: action) else {
+            batchFeedback = .saveFailure
+            return
+        }
+        selectedGapIDs.subtract(result.appliedIDs)
+        batchFeedback = JournalBatchFeedback(action: action, result: result)
     }
 
     private func performDeletion(_ deletion: JournalDeletion) async -> Bool {
@@ -375,6 +595,104 @@ private enum JournalDeletion {
         switch self {
         case .trip: "This permanently removes the trip and its saved route points. Related statistics will be recalculated."
         case .visit: "This permanently removes the visit. Related place totals and statistics will be recalculated."
+        }
+    }
+}
+
+private struct JournalBatchFeedback: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+
+    init(action: HistoryGapBatchAction, result: HistoryGapBatchResult) {
+        title = result.appliedCount == 0
+            ? "No Gaps Changed"
+            : "Updated \(result.appliedCount) Gap\(result.appliedCount == 1 ? "" : "s")"
+        if result.skippedCount > 0 {
+            message = "\(result.skippedCount) selected gap\(result.skippedCount == 1 ? " was" : "s were") skipped because \(action.skippedReason)."
+        } else {
+            message = action.successMessage
+        }
+    }
+
+    private init(title: String, message: String) {
+        self.title = title
+        self.message = message
+    }
+
+    static let saveFailure = JournalBatchFeedback(
+        title: "Couldn’t Update Gaps",
+        message: "Locki couldn’t save the batch change. The selected gaps may be unchanged."
+    )
+}
+
+nonisolated private extension HistoryGapBatchAction {
+    var title: String {
+        switch self {
+        case .noMovement: "Mark as No Movement"
+        case .dismiss: "Dismiss from Journal"
+        case .restore: "Restore to Unresolved"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .noMovement: "figure.stand"
+        case .dismiss: "eye.slash"
+        case .restore: "arrow.uturn.backward"
+        }
+    }
+
+    var confirmationMessage: String {
+        switch self {
+        case .noMovement:
+            "Only selected, unresolved movement gaps will be marked. Other gap types and existing resolutions stay unchanged."
+        case .dismiss:
+            "Only selected, unresolved gaps will be hidden. The missing intervals remain in completeness calculations."
+        case .restore:
+            "Selected resolutions, dismissals, and estimated routes will be removed. The gaps return to unresolved."
+        }
+    }
+
+    var successMessage: String {
+        switch self {
+        case .noMovement: "The selected intervals no longer appear as gaps or reduce history completeness."
+        case .dismiss: "The selected gaps are hidden but still count as incomplete history."
+        case .restore: "The selected gaps are unresolved again."
+        }
+    }
+
+    var skippedReason: String {
+        switch self {
+        case .noMovement: "it was not an unresolved movement gap"
+        case .dismiss: "it was already resolved or dismissed"
+        case .restore: "it was already unresolved"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .noMovement: "No Movement"
+        case .dismiss: "Dismiss"
+        case .restore: "Restore"
+        }
+    }
+
+    func confirmationTitle(count: Int) -> String {
+        "\(title) for \(count) Gap\(count == 1 ? "" : "s")?"
+    }
+}
+
+@MainActor
+private extension HistoryGapBatchAction {
+    func canApply(to gap: HistoryGapRecord) -> Bool {
+        switch self {
+        case .noMovement:
+            gap.reason == .discontinuity && gap.resolution == .unresolved
+        case .dismiss:
+            gap.resolution == .unresolved
+        case .restore:
+            gap.resolution != .unresolved
         }
     }
 }
@@ -479,10 +797,16 @@ private struct JournalMapRoute: Identifiable {
         .joined(separator: "-")
         coordinates = points.map { $0.coordinate.locationCoordinate }
     }
+
+    init(gapID: UUID, coordinates: [GeoCoordinate]) {
+        id = "estimated-\(gapID.uuidString)"
+        self.coordinates = coordinates.map(\.locationCoordinate)
+    }
 }
 
 private struct JournalRangeMap: View {
     let routes: [JournalMapRoute]
+    let estimatedRoutes: [JournalMapRoute]
     let visits: [HistoryVisitRecord]
 
     var body: some View {
@@ -490,6 +814,10 @@ private struct JournalRangeMap: View {
             ForEach(routes) { route in
                 MapPolyline(coordinates: route.coordinates)
                     .stroke(.blue, lineWidth: 5)
+            }
+            ForEach(estimatedRoutes) { route in
+                MapPolyline(coordinates: route.coordinates)
+                    .stroke(.orange, style: StrokeStyle(lineWidth: 5, dash: [8, 6]))
             }
             ForEach(visits) { visit in
                 Marker(
@@ -504,7 +832,7 @@ private struct JournalRangeMap: View {
     }
 
     private var cameraPosition: MapCameraPosition {
-        let coordinates = routes.flatMap(\.coordinates) + visits.map {
+        let coordinates = (routes + estimatedRoutes).flatMap(\.coordinates) + visits.map {
             CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
         }
         guard !coordinates.isEmpty else { return .automatic }
@@ -581,6 +909,41 @@ extension HistoryGapReason {
         case .disabled: "Location History was disabled"
         case .persistence: "History could not be saved"
         case .unavailable: "Location was unavailable"
+        }
+    }
+}
+
+@MainActor
+private extension HistoryGapRecord {
+    var journalSubtitle: String {
+        let diagnosis = (self.diagnosis ?? reason.defaultDiagnosis).displayName
+        guard let endedAt else { return diagnosis }
+        return "\(diagnosis) · \(max(endedAt.timeIntervalSince(startedAt), 0).formattedDuration)"
+    }
+}
+
+nonisolated extension HistoryGapResolution {
+    var title: String {
+        switch self {
+        case .unresolved: "Tracking gap"
+        case .dismissed: "Dismissed gap"
+        case .noMovement: "No movement confirmed"
+        case .confirmedRoute: "Estimated route"
+        }
+    }
+}
+
+nonisolated extension HistoryGapDiagnosis {
+    var displayName: String {
+        switch self {
+        case .prolongedUpdateInterval: "No reliable update arrived for an extended period"
+        case .implausibleLocationJump: "The next location was too far away to connect reliably"
+        case .permissionUnavailable: "Location permission was unavailable"
+        case .preciseLocationUnavailable: "Precise Location was unavailable"
+        case .historyDisabled: "Location History was disabled"
+        case .saveFailed: "History could not be saved"
+        case .locationTemporarilyUnavailable: "iOS temporarily could not determine a reliable location"
+        case .unknownDiscontinuity: "Reliable updates were interrupted"
         }
     }
 }
