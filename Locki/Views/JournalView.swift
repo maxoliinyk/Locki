@@ -394,10 +394,6 @@ extension TimeInterval {
 }
 
 extension Double {
-    var formattedDistance: String {
-        Measurement(value: self, unit: UnitLength.meters).formatted(.measurement(width: .abbreviated))
-    }
-
     var formattedSpeed: String {
         Measurement(value: self, unit: UnitSpeed.metersPerSecond).formatted(.measurement(width: .abbreviated))
     }
