@@ -17,88 +17,180 @@ struct JournalView: View {
     @Query private var gaps: [HistoryGapRecord]
 
     let historyModel: HistoryModel
-    @State private var selectedDay = Calendar.current.startOfDay(for: .now)
+    @State private var selectedPeriod = HistoryPeriod.day
+    @State private var anchorDate = Date.now
     @State private var pendingDeletion: JournalDeletion?
     @State private var showsDeletionError = false
 
-    private var dayInterval: DateInterval {
-        let calendar = Calendar.current
-        return DateInterval(
-            start: selectedDay,
-            end: calendar.date(byAdding: .day, value: 1, to: selectedDay) ?? selectedDay.addingTimeInterval(86_400)
+    private var earliestHistoryDate: Date {
+        [
+            trips.map(\.startedAt).min(),
+            visits.map(\.arrivalDate).min(),
+            gaps.map(\.startedAt).min(),
+        ]
+        .compactMap { $0 }
+        .min() ?? .now
+    }
+
+    private var selectedRange: HistoryDateRange {
+        selectedPeriod.range(
+            containing: anchorDate,
+            earliestDate: earliestHistoryDate
         )
     }
 
-    private var dayTrips: [HistoryTripRecord] {
+    private var periodTrips: [HistoryTripRecord] {
         trips.filter {
             !$0.isExcluded
                 && ($0.distanceMeters >= HistoryConfiguration.standard.minimumTripDistanceMeters
                     || $0.elapsedDuration >= HistoryConfiguration.standard.minimumTripDuration)
-                && $0.startedAt < dayInterval.end
-                && ($0.endedAt ?? .distantFuture) >= dayInterval.start
+                && JournalPresentation.overlaps(
+                    start: $0.startedAt,
+                    end: $0.endedAt,
+                    range: selectedRange.interval
+                )
         }
     }
 
-    private var dayVisits: [HistoryVisitRecord] {
+    private var periodVisits: [HistoryVisitRecord] {
         visits.filter {
             !$0.isExcluded
-                && $0.arrivalDate < dayInterval.end
-                && ($0.departureDate ?? .distantFuture) >= dayInterval.start
+                && JournalPresentation.overlaps(
+                    start: $0.arrivalDate,
+                    end: $0.departureDate,
+                    range: selectedRange.interval
+                )
         }
     }
 
-    private var dayGaps: [HistoryGapRecord] {
-        gaps.filter { $0.startedAt < dayInterval.end && ($0.endedAt ?? .distantFuture) >= dayInterval.start }
+    private var periodGaps: [HistoryGapRecord] {
+        gaps.filter {
+            JournalPresentation.overlaps(
+                start: $0.startedAt,
+                end: $0.endedAt,
+                range: selectedRange.interval
+            )
+        }
     }
 
     private var timeline: [JournalTimelineItem] {
-        let tripItems = dayTrips.map { JournalTimelineItem.trip($0) }
-        let visitItems = dayVisits.map { JournalTimelineItem.visit($0) }
-        let gapItems = dayGaps.map { JournalTimelineItem.gap($0) }
-        return (tripItems + visitItems + gapItems).sorted { $0.date < $1.date }
+        let tripItems = periodTrips.map { JournalTimelineItem.trip($0) }
+        let visitItems = periodVisits.map { JournalTimelineItem.visit($0) }
+        let gapItems = periodGaps.map { JournalTimelineItem.gap($0) }
+        return (tripItems + visitItems + gapItems).sorted {
+            $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date
+        }
+    }
+
+    private var timelineSections: [JournalTimelineSection] {
+        let itemsByID = Dictionary(uniqueKeysWithValues: timeline.map { ($0.id, $0) })
+        return JournalPresentation.dayGroups(timeline.map(\.descriptor)).map { group in
+            JournalTimelineSection(
+                group: group,
+                items: group.itemIDs.compactMap { itemsByID[$0] }
+            )
+        }
+    }
+
+    private var mapRoutes: [JournalMapRoute] {
+        let chunksByTripID = Dictionary(grouping: chunks, by: \.tripID)
+        let routes = periodTrips
+            .sorted { $0.startedAt < $1.startedAt }
+            .map { trip in
+                (chunksByTripID[trip.id] ?? [])
+                    .sorted { $0.sequence < $1.sequence }
+                    .flatMap(\.points)
+            }
+        return JournalPresentation.reducedRoutes(routes, pointLimit: mapPointLimit).map {
+            JournalMapRoute(points: $0)
+        }
+    }
+
+    private var mapPointLimit: Int {
+        switch selectedPeriod {
+        case .day: 2_500
+        case .week: 2_500
+        case .month: 2_000
+        case .year: 1_500
+        case .all: 1_000
+        }
+    }
+
+    private var mapVisits: [HistoryVisitRecord] {
+        let sortedVisits = periodVisits.sorted { $0.arrivalDate < $1.arrivalDate }
+        return JournalPresentation.sampledIndices(count: sortedVisits.count, limit: 250).map {
+            sortedVisits[$0]
+        }
+    }
+
+    private var mapID: String {
+        "\(selectedPeriod.id)-\(selectedRange.interval.start.timeIntervalSinceReferenceDate)"
     }
 
     var body: some View {
         NavigationStack {
             List {
-                dayPicker
+                periodControls
 
                 if !timeline.isEmpty {
-                    if !dayTrips.isEmpty || !dayVisits.isEmpty {
+                    if !periodTrips.isEmpty || !periodVisits.isEmpty {
                         Section {
-                            JournalDayMap(
-                                trips: dayTrips,
-                                visits: dayVisits,
-                                chunks: chunks
+                            JournalRangeMap(
+                                routes: mapRoutes,
+                                visits: mapVisits
                             )
+                            .id(mapID)
                             .frame(minHeight: 220)
                             .clipShape(.rect(cornerRadius: 16))
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Map of the selected day's routes and visits")
+                            .accessibilityLabel("Map of routes and visits for \(selectedRange.title())")
                         }
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                     }
 
-                    Section("Day Summary") {
-                        LabeledContent("Distance", value: dayTrips.reduce(0) { $0 + $1.distanceMeters }.formattedDistance)
-                        LabeledContent("Moving time", value: dayTrips.reduce(0) { $0 + $1.movingDuration }.formattedDuration)
-                        LabeledContent("Visits", value: dayVisits.count.formatted())
-                        if !dayGaps.isEmpty {
-                            Label("History contains \(dayGaps.count) tracking gap\(dayGaps.count == 1 ? "" : "s")", systemImage: "exclamationmark.triangle")
+                    Section("Summary") {
+                        LabeledContent(
+                            "Distance",
+                            value: periodTrips.reduce(0) { $0 + $1.distanceMeters }.formattedDistance
+                        )
+                        LabeledContent(
+                            "Moving time",
+                            value: periodTrips.reduce(0) { $0 + $1.movingDuration }.formattedDuration
+                        )
+                        LabeledContent("Visits", value: periodVisits.count.formatted())
+                        LabeledContent("Trips", value: periodTrips.count.formatted())
+                        if !periodGaps.isEmpty {
+                            Label(
+                                "History contains \(periodGaps.count) tracking gap\(periodGaps.count == 1 ? "" : "s")",
+                                systemImage: "exclamationmark.triangle"
+                            )
                                 .foregroundStyle(.orange)
                         }
                     }
 
-                    Section("Timeline") {
-                        ForEach(timeline) { item in
-                            timelineRow(item)
+                    if selectedPeriod == .day {
+                        Section("Timeline") {
+                            ForEach(timeline) { item in
+                                timelineRow(item)
+                            }
+                        }
+                    } else {
+                        ForEach(timelineSections) { section in
+                            Section {
+                                ForEach(section.items) { item in
+                                    timelineRow(item)
+                                }
+                            } header: {
+                                Text(section.group.title())
+                                    .accessibilityAddTraits(.isHeader)
+                            }
                         }
                     }
                 } else {
                     Section {
                         ContentUnavailableView(
-                            historyModel.isEnabled ? "No History This Day" : "Location History Is Off",
+                            historyModel.isEnabled ? "No History in This Period" : "Location History Is Off",
                             systemImage: historyModel.isEnabled ? "calendar.badge.clock" : "location.slash",
                             description: Text(
                                 historyModel.isEnabled
@@ -139,34 +231,52 @@ struct JournalView: View {
         }
     }
 
-    private var dayPicker: some View {
+    private var periodControls: some View {
         Section {
-            HStack {
-                Button("Previous day", systemImage: "chevron.left") {
-                    selectedDay = Calendar.current.date(byAdding: .day, value: -1, to: selectedDay) ?? selectedDay
+            Picker("Period", selection: $selectedPeriod) {
+                ForEach(HistoryPeriod.allCases) { period in
+                    Text(period.title).tag(period)
                 }
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(.rect)
-                .buttonStyle(.borderless)
+            }
+            .pickerStyle(.menu)
 
-                Spacer()
-                DatePicker("Day", selection: $selectedDay, in: ...Date.now, displayedComponents: .date)
-                    .labelsHidden()
-                    .accessibilityLabel("Journal day")
-                Spacer()
+            if selectedPeriod != .all {
+                DatePicker("Date", selection: $anchorDate, in: ...Date.now, displayedComponents: .date)
+            }
 
-                Button("Next day", systemImage: "chevron.right") {
-                    selectedDay = min(
-                        Calendar.current.date(byAdding: .day, value: 1, to: selectedDay) ?? selectedDay,
-                        Calendar.current.startOfDay(for: .now)
-                    )
+            if selectedPeriod == .all {
+                Text(selectedRange.title())
+                    .frame(maxWidth: .infinity)
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+            } else {
+                HStack {
+                    Button("Previous \(selectedPeriod.title.lowercased())", systemImage: "chevron.left") {
+                        anchorDate = selectedPeriod.date(byAdvancing: anchorDate, value: -1)
+                    }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
+                    .buttonStyle(.borderless)
+
+                    Spacer(minLength: 8)
+
+                    Text(selectedRange.title())
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
+
+                    Spacer(minLength: 8)
+
+                    Button("Next \(selectedPeriod.title.lowercased())", systemImage: "chevron.right") {
+                        anchorDate = selectedPeriod.date(byAdvancing: anchorDate, value: 1)
+                    }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
+                    .buttonStyle(.borderless)
+                    .disabled(!selectedPeriod.canAdvance(from: anchorDate))
                 }
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(.rect)
-                .buttonStyle(.borderless)
-                .disabled(Calendar.current.isDateInToday(selectedDay))
             }
         }
     }
@@ -183,6 +293,7 @@ struct JournalView: View {
                     title: trip.mode.displayName,
                     subtitle: "\(trip.distanceMeters.formattedDistance) · \(trip.movingDuration.formattedDuration)",
                     date: trip.startedAt,
+                    timeZoneIdentifier: trip.startTimeZoneIdentifier,
                     warning: trip.completeness < 1 ? "Incomplete" : nil
                 )
             }
@@ -206,6 +317,7 @@ struct JournalView: View {
                     title: place?.name ?? "Unclassified place",
                     subtitle: visit.duration.formattedDuration,
                     date: visit.arrivalDate,
+                    timeZoneIdentifier: visit.timeZoneIdentifier,
                     warning: visit.departureDate == nil
                         ? "Still here"
                         : visit.quality < 0.5 ? "Estimated" : nil
@@ -226,6 +338,7 @@ struct JournalView: View {
                 title: "Tracking gap",
                 subtitle: gap.reason.displayName,
                 date: gap.startedAt,
+                timeZoneIdentifier: TimeZone.current.identifier,
                 warning: gap.endedAt == nil ? "Ongoing" : nil
             )
             .foregroundStyle(.orange)
@@ -286,6 +399,25 @@ private enum JournalTimelineItem: Identifiable {
         case .gap(let value): value.startedAt
         }
     }
+
+    var timeZoneIdentifier: String {
+        switch self {
+        case .trip(let value): value.startTimeZoneIdentifier
+        case .visit(let value): value.timeZoneIdentifier
+        case .gap: TimeZone.current.identifier
+        }
+    }
+
+    var descriptor: JournalTimelineDescriptor {
+        JournalTimelineDescriptor(id: id, date: date, timeZoneIdentifier: timeZoneIdentifier)
+    }
+}
+
+private struct JournalTimelineSection: Identifiable {
+    let group: JournalDayGroup
+    let items: [JournalTimelineItem]
+
+    var id: String { group.id }
 }
 
 private struct JournalRow: View {
@@ -293,6 +425,7 @@ private struct JournalRow: View {
     let title: String
     let subtitle: String
     let date: Date
+    let timeZoneIdentifier: String
     let warning: String?
 
     var body: some View {
@@ -307,7 +440,7 @@ private struct JournalRow: View {
                     }
                 }
                 Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
-                Text(date, format: .dateTime.hour().minute())
+                Text(formattedTime)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -316,25 +449,47 @@ private struct JournalRow: View {
         }
         .accessibilityElement(children: .combine)
     }
+
+    private var formattedTime: String {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.timeZone = TimeZone(identifier: timeZoneIdentifier) ?? .current
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
 }
 
-private struct JournalDayMap: View {
-    let trips: [HistoryTripRecord]
+private struct JournalMapRoute: Identifiable {
+    let id: String
+    let coordinates: [CLLocationCoordinate2D]
+
+    init(points: [HistoryPoint]) {
+        let first = points.first
+        let last = points.last
+        id = [
+            first?.timestampSeconds ?? 0,
+            Int64(first?.latitudeE5 ?? 0),
+            Int64(first?.longitudeE5 ?? 0),
+            last?.timestampSeconds ?? 0,
+            Int64(last?.latitudeE5 ?? 0),
+            Int64(last?.longitudeE5 ?? 0),
+            Int64(points.count),
+        ]
+        .map(String.init)
+        .joined(separator: "-")
+        coordinates = points.map { $0.coordinate.locationCoordinate }
+    }
+}
+
+private struct JournalRangeMap: View {
+    let routes: [JournalMapRoute]
     let visits: [HistoryVisitRecord]
-    let chunks: [TrajectoryChunkRecord]
 
     var body: some View {
         Map(initialPosition: cameraPosition) {
-            ForEach(trips) { trip in
-                let coordinates = chunks
-                    .filter { $0.tripID == trip.id }
-                    .sorted { $0.sequence < $1.sequence }
-                    .flatMap(\.points)
-                    .map { $0.coordinate.locationCoordinate }
-                if coordinates.count >= 2 {
-                    MapPolyline(coordinates: coordinates)
-                        .stroke(.blue, lineWidth: 5)
-                }
+            ForEach(routes) { route in
+                MapPolyline(coordinates: route.coordinates)
+                    .stroke(.blue, lineWidth: 5)
             }
             ForEach(visits) { visit in
                 Marker(
@@ -349,9 +504,9 @@ private struct JournalDayMap: View {
     }
 
     private var cameraPosition: MapCameraPosition {
-        let coordinates = trips.flatMap { trip in
-            chunks.filter { $0.tripID == trip.id }.flatMap(\.points).map { $0.coordinate.locationCoordinate }
-        } + visits.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        let coordinates = routes.flatMap(\.coordinates) + visits.map {
+            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+        }
         guard !coordinates.isEmpty else { return .automatic }
         var rect = MKMapRect.null
         for coordinate in coordinates {
