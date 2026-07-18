@@ -24,44 +24,62 @@ actor BackupStore {
                 points: $0.points.map(BackupHistoryPoint.init)
             )
         }
+        var trajectoryBounds: [UUID: (first: Date, last: Date)] = [:]
+        for chunk in trajectory {
+            for point in chunk.points {
+                let date = Date(timeIntervalSince1970: TimeInterval(point.timestampSeconds))
+                if let bounds = trajectoryBounds[chunk.tripID] {
+                    trajectoryBounds[chunk.tripID] = (min(bounds.first, date), max(bounds.last, date))
+                } else {
+                    trajectoryBounds[chunk.tripID] = (date, date)
+                }
+            }
+        }
         let trips = try modelContext.fetch(
             FetchDescriptor<HistoryTripRecord>(sortBy: [SortDescriptor(\.startedAt)])
-        ).map {
-            BackupTrip(
-                id: $0.id,
-                startedAt: $0.startedAt,
-                endedAt: $0.endedAt,
-                startTimeZoneIdentifier: $0.startTimeZoneIdentifier,
-                endTimeZoneIdentifier: $0.endTimeZoneIdentifier,
-                originPlaceID: $0.originPlaceID,
-                destinationPlaceID: $0.destinationPlaceID,
-                distanceMeters: $0.distanceMeters,
-                movingDuration: $0.movingDuration,
-                elapsedDuration: $0.elapsedDuration,
-                averageMovingSpeedMetersPerSecond: $0.averageMovingSpeedMetersPerSecond,
-                peakSpeedMetersPerSecond: $0.peakSpeedMetersPerSecond,
-                modeRawValue: $0.modeRawValue,
-                modeConfidence: $0.modeConfidence,
-                completeness: $0.completeness,
-                isExcluded: $0.isExcluded,
-                routePatternID: $0.routePatternID
+        ).map { trip -> BackupTrip in
+            let bounds = trajectoryBounds[trip.id]
+            let startedAt = min(trip.startedAt, bounds?.first ?? trip.startedAt)
+            let endedAt = trip.endedAt.map { max(max($0, startedAt), bounds?.last ?? $0) }
+            let elapsedDuration = endedAt.map {
+                max(trip.elapsedDuration, $0.timeIntervalSince(startedAt))
+            } ?? trip.elapsedDuration
+            return BackupTrip(
+                id: trip.id,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                startTimeZoneIdentifier: trip.startTimeZoneIdentifier,
+                endTimeZoneIdentifier: trip.endTimeZoneIdentifier,
+                originPlaceID: trip.originPlaceID,
+                destinationPlaceID: trip.destinationPlaceID,
+                distanceMeters: trip.distanceMeters,
+                movingDuration: trip.movingDuration,
+                elapsedDuration: elapsedDuration,
+                averageMovingSpeedMetersPerSecond: trip.averageMovingSpeedMetersPerSecond,
+                peakSpeedMetersPerSecond: trip.peakSpeedMetersPerSecond,
+                modeRawValue: trip.modeRawValue,
+                modeConfidence: trip.modeConfidence,
+                completeness: trip.completeness,
+                isExcluded: trip.isExcluded,
+                routePatternID: trip.routePatternID
             )
         }
         let visits = try modelContext.fetch(
             FetchDescriptor<HistoryVisitRecord>(sortBy: [SortDescriptor(\.arrivalDate)])
-        ).map {
-            BackupVisit(
-                id: $0.id,
-                placeID: $0.placeID,
-                arrivalDate: $0.arrivalDate,
-                departureDate: $0.departureDate,
-                timeZoneIdentifier: $0.timeZoneIdentifier,
-                latitude: $0.latitude,
-                longitude: $0.longitude,
-                radiusMeters: $0.radiusMeters,
-                sourceRawValue: $0.sourceRawValue,
-                quality: $0.quality,
-                isExcluded: $0.isExcluded
+        ).map { visit in
+            let departureDate = visit.departureDate.map { max($0, visit.arrivalDate) }
+            return BackupVisit(
+                id: visit.id,
+                placeID: visit.placeID,
+                arrivalDate: visit.arrivalDate,
+                departureDate: departureDate,
+                timeZoneIdentifier: visit.timeZoneIdentifier,
+                latitude: visit.latitude,
+                longitude: visit.longitude,
+                radiusMeters: visit.radiusMeters,
+                sourceRawValue: visit.sourceRawValue,
+                quality: visit.quality,
+                isExcluded: visit.isExcluded
             )
         }
         let places = try modelContext.fetch(FetchDescriptor<HistoryPlaceRecord>()).map {
@@ -89,12 +107,13 @@ actor BackupStore {
                 isManuallyEdited: $0.isManuallyEdited
             )
         }
-        let gaps = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>()).map {
-            BackupGap(
-                id: $0.id,
-                startedAt: $0.startedAt,
-                endedAt: $0.endedAt,
-                reasonRawValue: $0.reasonRawValue
+        let gaps = try modelContext.fetch(FetchDescriptor<HistoryGapRecord>()).map { gap in
+            let endedAt = gap.endedAt.map { max($0, gap.startedAt) }
+            return BackupGap(
+                id: gap.id,
+                startedAt: gap.startedAt,
+                endedAt: endedAt,
+                reasonRawValue: gap.reasonRawValue
             )
         }
         let preferences = try modelContext.fetch(FetchDescriptor<PlaceSuggestionPreferenceRecord>()).map {
@@ -103,9 +122,21 @@ actor BackupStore {
                 dismissedSuggestionRawValue: $0.dismissedSuggestionRawValue
             )
         }
+        let openTripIDs = Set<UUID>(trips.filter { $0.endedAt == nil }.map(\.id))
+        let latestOpenTrajectoryDate = trajectory
+            .filter { openTripIDs.contains($0.tripID) }
+            .flatMap(\.points)
+            .map { Date(timeIntervalSince1970: TimeInterval($0.timestampSeconds)) }
+            .max()
+        var snapshotDates = [exportedAt]
+        if let latestOpenTrajectoryDate { snapshotDates.append(latestOpenTrajectoryDate) }
+        snapshotDates.append(contentsOf: trips.filter { $0.endedAt == nil }.map(\.startedAt))
+        snapshotDates.append(contentsOf: visits.filter { $0.departureDate == nil }.map(\.arrivalDate))
+        snapshotDates.append(contentsOf: gaps.filter { $0.endedAt == nil }.map(\.startedAt))
+        let snapshotDate = snapshotDates.max() ?? exportedAt
         return try BackupArchiveCodec.encode(
             LockiBackupEnvelope(
-                exportedAt: exportedAt,
+                exportedAt: snapshotDate,
                 payload: LockiBackupPayload(
                     coverage: coverage,
                     trajectory: trajectory,

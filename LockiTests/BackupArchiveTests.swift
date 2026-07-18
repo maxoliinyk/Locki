@@ -39,6 +39,69 @@ struct BackupArchiveTests {
         #expect(days.first?.visitCount == 1)
     }
 
+    @Test("Export contains delayed points by expanding the trip interval")
+    func exportNormalizesDelayedTrajectoryPoint() async throws {
+        let container = try LockiPersistence.makeContainer(inMemory: true)
+        let exportedAt = Date.now
+        let trip = HistoryTripRecord(
+            startedAt: exportedAt - 600,
+            startTimeZoneIdentifier: TimeZone.current.identifier
+        )
+        trip.endedAt = exportedAt - 300
+        container.mainContext.insert(trip)
+        let delayedPoint = HistoryPoint(
+            latitudeE5: 5_252_000,
+            longitudeE5: 1_340_000,
+            timestampSeconds: Int64((exportedAt - 120).timeIntervalSince1970),
+            accuracyBucketMeters: 10,
+            speedHalfMetersPerSecond: nil,
+            courseFiveDegrees: nil,
+            timeZoneIdentifier: TimeZone.current.identifier
+        )
+        container.mainContext.insert(
+            try TrajectoryChunkRecord(tripID: trip.id, sequence: 0, points: [delayedPoint])
+        )
+        try container.mainContext.save()
+
+        let data = try await BackupStore(modelContainer: container).exportData(exportedAt: exportedAt)
+        let envelope = try BackupArchiveCodec.decode(data)
+        let backedUpTrip = try #require(envelope.payload.trips.first)
+
+        #expect(backedUpTrip.startedAt == trip.startedAt)
+        #expect(backedUpTrip.endedAt == delayedPoint.timestamp)
+        #expect(backedUpTrip.elapsedDuration == delayedPoint.timestamp.timeIntervalSince(trip.startedAt))
+    }
+
+    @Test("Export advances the snapshot date to contain open history")
+    func exportContainsOpenHistoryWithClockSkew() async throws {
+        let container = try LockiPersistence.makeContainer(inMemory: true)
+        let exportedAt = Date.now
+        let trip = HistoryTripRecord(
+            startedAt: exportedAt - 60,
+            startTimeZoneIdentifier: TimeZone.current.identifier
+        )
+        container.mainContext.insert(trip)
+        let latestPoint = HistoryPoint(
+            latitudeE5: 5_252_000,
+            longitudeE5: 1_340_000,
+            timestampSeconds: Int64(exportedAt.timeIntervalSince1970) + 5,
+            accuracyBucketMeters: 10,
+            speedHalfMetersPerSecond: nil,
+            courseFiveDegrees: nil,
+            timeZoneIdentifier: TimeZone.current.identifier
+        )
+        container.mainContext.insert(
+            try TrajectoryChunkRecord(tripID: trip.id, sequence: 0, points: [latestPoint])
+        )
+        try container.mainContext.save()
+
+        let data = try await BackupStore(modelContainer: container).exportData(exportedAt: exportedAt)
+        let envelope = try BackupArchiveCodec.decode(data)
+
+        #expect(envelope.exportedAt == latestPoint.timestamp)
+        #expect(envelope.payload.trips.first?.endedAt == nil)
+    }
+
     @Test("Repeated import is idempotent")
     func repeatedImport() async throws {
         let source = try LockiPersistence.makeContainer(inMemory: true)
