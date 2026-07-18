@@ -19,54 +19,87 @@ struct StatsView: View {
     @Query private var visits: [HistoryVisitRecord]
 
     let historyModel: HistoryModel
-    @State private var period: StatsPeriod = .month
+    @State private var selectedPeriod = HistoryPeriod.month
+    @State private var anchorDate = Date.now
 
     private var explorationSummary: ExplorationSummaryRecord? {
         explorationSummaries.first { $0.key == "primary" }
     }
 
-    private var periodStart: Date {
-        let calendar = Calendar.current
-        return switch period {
-        case .week: calendar.date(byAdding: .day, value: -7, to: .now) ?? .distantPast
-        case .month: calendar.date(byAdding: .month, value: -1, to: .now) ?? .distantPast
-        case .year: calendar.date(byAdding: .year, value: -1, to: .now) ?? .distantPast
-        case .all: .distantPast
+    private var earliestHistoryDate: Date {
+        [days.map(\.dayStart).min(), trips.map(\.startedAt).min(), visits.map(\.arrivalDate).min()]
+            .compactMap { $0 }
+            .min() ?? .now
+    }
+
+    private var selectedRange: HistoryDateRange {
+        selectedPeriod.range(containing: anchorDate, earliestDate: earliestHistoryDate)
+    }
+
+    private var daySnapshots: [StatsDaySnapshot] {
+        days.map {
+            StatsDaySnapshot(
+                dayStart: $0.dayStart,
+                distanceMeters: $0.distanceMeters,
+                movingDuration: $0.movingDuration,
+                placeDuration: $0.placeDuration,
+                tripCount: $0.tripCount,
+                visitCount: $0.visitCount,
+                completeness: $0.completeness
+            )
         }
     }
 
-    private var filteredDays: [HistoryDailySummaryRecord] { days.filter { $0.dayStart >= periodStart } }
+    private var filteredDays: [StatsDaySnapshot] {
+        StatsPresentation.days(daySnapshots, in: selectedRange.interval)
+    }
+
+    private var overview: StatsOverview {
+        StatsPresentation.overview(days: filteredDays)
+    }
+
+    private var chartGranularity: StatsChartGranularity? {
+        StatsPresentation.chartGranularity(for: selectedPeriod, range: selectedRange.interval)
+    }
+
+    private var chartBuckets: [StatsDistanceBucket] {
+        guard let chartGranularity else { return [] }
+        return StatsPresentation.distanceBuckets(days: filteredDays, granularity: chartGranularity)
+    }
+
     private var filteredTrips: [HistoryTripRecord] {
         trips.filter {
-            $0.startedAt >= periodStart
-                && !$0.isExcluded
+            !$0.isExcluded
                 && ($0.distanceMeters >= HistoryConfiguration.standard.minimumTripDistanceMeters
                     || $0.elapsedDuration >= HistoryConfiguration.standard.minimumTripDuration)
+                && JournalPresentation.overlaps(
+                    start: $0.startedAt,
+                    end: $0.endedAt,
+                    range: selectedRange.interval
+                )
         }
     }
     private var filteredVisits: [HistoryVisitRecord] {
-        visits.filter { ($0.departureDate ?? .now) >= periodStart && !$0.isExcluded }
+        visits.filter {
+            !$0.isExcluded
+                && JournalPresentation.overlaps(
+                    start: $0.arrivalDate,
+                    end: $0.departureDate,
+                    range: selectedRange.interval
+                )
+        }
     }
-    private var distance: Double { filteredDays.reduce(0) { $0 + $1.distanceMeters } }
-    private var movingDuration: TimeInterval { filteredDays.reduce(0) { $0 + $1.movingDuration } }
-    private var placeDuration: TimeInterval { filteredVisits.reduce(0) { result, visit in
-        let start = max(visit.arrivalDate, periodStart)
-        return result + max((visit.departureDate ?? .now).timeIntervalSince(start), 0)
-    } }
 
     private var favoritePlaces: [HistoryPlaceRecord] {
         places
             .filter { place in
-                let visits = filteredVisits.filter { $0.placeID == place.id }
-                let days = Set(visits.map { Calendar.current.startOfDay(for: $0.arrivalDate) }).count
-                let duration = visits.reduce(0) { result, visit in
-                    let start = max(visit.arrivalDate, periodStart)
-                    return result + max((visit.departureDate ?? .now).timeIntervalSince(start), 0)
-                }
+                let placeVisits = filteredVisits.filter { $0.placeID == place.id }
+                let visitDays = Set(placeVisits.map { Calendar.current.startOfDay(for: $0.arrivalDate) }).count
+                let duration = periodDuration(at: place.id)
                 return !place.isExcluded
                     && (place.isFavorite
-                        || (visits.count >= FrequentPlaceRanker.minimumVisitCount
-                            && days >= FrequentPlaceRanker.minimumDistinctDayCount
+                        || (placeVisits.count >= FrequentPlaceRanker.minimumVisitCount
+                            && visitDays >= FrequentPlaceRanker.minimumDistinctDayCount
                             && duration >= FrequentPlaceRanker.minimumDuration))
             }
             .sorted {
@@ -99,52 +132,61 @@ struct StatsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Picker("Period", selection: $period) {
-                        ForEach(StatsPeriod.allCases) { Text($0.title).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                }
+                periodControls
 
-                if historyModel.overview.latestEventAt != nil || !days.isEmpty {
+                if !filteredDays.isEmpty {
                     Section("Overview") {
-                        LabeledContent("Distance", value: distance.formattedDistance)
-                        LabeledContent("Moving time", value: movingDuration.formattedDuration)
-                        LabeledContent("Time at places", value: placeDuration.formattedDuration)
-                        LabeledContent("Trips", value: filteredTrips.count.formatted())
-                        LabeledContent("Tracked days", value: filteredDays.count.formatted())
-                        if filteredDays.contains(where: { $0.completeness < 1 }) {
+                        LabeledContent("Distance", value: overview.distanceMeters.formattedDistance)
+                        LabeledContent("Moving time", value: overview.movingDuration.formattedDuration)
+                        LabeledContent("Time at places", value: overview.placeDuration.formattedDuration)
+                        LabeledContent("Trips", value: overview.tripCount.formatted())
+                        if selectedPeriod == .day {
+                            LabeledContent("Visits", value: overview.visitCount.formatted())
+                        } else {
+                            LabeledContent("Tracked days", value: overview.trackedDayCount.formatted())
+                        }
+                        if overview.containsIncompleteHistory {
                             Label("Some days contain tracking gaps", systemImage: "exclamationmark.triangle")
                                 .foregroundStyle(.orange)
                         }
                     }
 
-                    if !filteredDays.isEmpty {
-                        Section("Daily Distance") {
-                            Chart(filteredDays) { day in
+                    if let chartGranularity, !chartBuckets.isEmpty {
+                        Section(chartGranularity.title) {
+                            Chart(chartBuckets) { bucket in
                                 BarMark(
-                                    x: .value("Day", day.dayStart, unit: .day),
-                                    y: .value("Distance", day.distanceMeters / 1_000)
+                                    x: .value("Date", bucket.start),
+                                    y: .value("Distance", bucket.distanceMeters / 1_000)
                                 )
-                                .foregroundStyle(day.completeness < 1 ? .orange : .blue)
+                                .foregroundStyle(bucket.completeness < 1 ? .orange : .blue)
                                 .annotation(position: .top) {
-                                    if day.completeness < 1 {
+                                    if bucket.completeness < 1 {
                                         Image(systemName: "exclamationmark.triangle.fill")
                                             .font(.caption2)
                                             .foregroundStyle(.orange)
                                             .accessibilityHidden(true)
                                     }
                                 }
-                                .accessibilityLabel(day.dayStart.formatted(date: .abbreviated, time: .omitted))
+                                .accessibilityLabel(chartDateLabel(bucket.start))
                                 .accessibilityValue(
-                                    day.completeness < 1
-                                        ? "\(day.distanceMeters.formattedDistance), incomplete due to tracking gaps"
-                                        : "\(day.distanceMeters.formattedDistance), complete"
+                                    bucket.completeness < 1
+                                        ? "\(bucket.distanceMeters.formattedDistance), incomplete due to tracking gaps"
+                                        : "\(bucket.distanceMeters.formattedDistance), complete"
                                 )
                             }
                             .chartYAxisLabel("Kilometers")
-                            .chartScrollableAxes(.horizontal)
-                            .chartXVisibleDomain(length: min(TimeInterval(filteredDays.count), 14) * 86_400)
+                            .chartYScale(domain: .automatic(includesZero: true))
+                            .chartXAxis {
+                                AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                                    AxisGridLine()
+                                    AxisTick()
+                                    AxisValueLabel {
+                                        if let date = value.as(Date.self) {
+                                            Text(chartDateLabel(date))
+                                        }
+                                    }
+                                }
+                            }
                             .frame(minHeight: 220)
                             Text("A warning symbol marks days with incomplete history.")
                                 .font(.caption)
@@ -214,9 +256,13 @@ struct StatsView: View {
                 } else {
                     Section {
                         ContentUnavailableView(
-                            "No History Stats Yet",
+                            historyModel.isEnabled ? "No Stats in This Period" : "Location History Is Off",
                             systemImage: "chart.bar.xaxis",
-                            description: Text("Enable Location History and move through the world to build private statistics.")
+                            description: Text(
+                                historyModel.isEnabled
+                                    ? "Choose another period or keep exploring to build private statistics."
+                                    : "Enable Location History in Settings to build private statistics."
+                            )
                         )
                     }
                     .listRowBackground(Color.clear)
@@ -234,10 +280,75 @@ struct StatsView: View {
         }
     }
 
+    private var periodControls: some View {
+        Section {
+            Picker("Period", selection: $selectedPeriod) {
+                ForEach(HistoryPeriod.allCases) { period in
+                    Text(period.title).tag(period)
+                }
+            }
+            .pickerStyle(.menu)
+
+            if selectedPeriod != .all {
+                DatePicker("Date", selection: $anchorDate, in: ...Date.now, displayedComponents: .date)
+            }
+
+            if selectedPeriod == .all {
+                Text(selectedRange.title())
+                    .frame(maxWidth: .infinity)
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+            } else {
+                HStack {
+                    Button("Previous \(selectedPeriod.title.lowercased())", systemImage: "chevron.left") {
+                        anchorDate = selectedPeriod.date(byAdvancing: anchorDate, value: -1)
+                    }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
+                    .buttonStyle(.borderless)
+
+                    Spacer(minLength: 8)
+
+                    Text(selectedRange.title())
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
+
+                    Spacer(minLength: 8)
+
+                    Button("Next \(selectedPeriod.title.lowercased())", systemImage: "chevron.right") {
+                        anchorDate = selectedPeriod.date(byAdvancing: anchorDate, value: 1)
+                    }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
+                    .buttonStyle(.borderless)
+                    .disabled(!selectedPeriod.canAdvance(from: anchorDate))
+                }
+            }
+        }
+    }
+
+    private func chartDateLabel(_ date: Date) -> String {
+        switch chartGranularity {
+        case .day:
+            date.formatted(.dateTime.day().month(.abbreviated))
+        case .month:
+            selectedPeriod == .all
+                ? date.formatted(.dateTime.month(.abbreviated).year())
+                : date.formatted(.dateTime.month(.abbreviated))
+        case .year:
+            date.formatted(.dateTime.year())
+        case nil:
+            date.formatted(date: .abbreviated, time: .omitted)
+        }
+    }
+
     private func periodDuration(at placeID: UUID) -> TimeInterval {
         filteredVisits.filter { $0.placeID == placeID }.reduce(0) { result, visit in
-            let start = max(visit.arrivalDate, periodStart)
-            let end = min(visit.departureDate ?? .now, .now)
+            let start = max(visit.arrivalDate, selectedRange.interval.start)
+            let end = min(visit.departureDate ?? .now, selectedRange.interval.end, .now)
             return result + max(end.timeIntervalSince(start), 0)
         }
     }
@@ -345,23 +456,6 @@ private struct RoutePatternDetailView: View {
         }
         guard !rect.isNull else { return .automatic }
         return .rect(rect.insetBy(dx: -max(rect.width * 0.15, 1_000), dy: -max(rect.height * 0.15, 1_000)))
-    }
-}
-
-private enum StatsPeriod: String, CaseIterable, Identifiable {
-    case week
-    case month
-    case year
-    case all
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .week: "Week"
-        case .month: "Month"
-        case .year: "Year"
-        case .all: "All"
-        }
     }
 }
 
