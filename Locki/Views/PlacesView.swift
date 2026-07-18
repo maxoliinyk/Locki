@@ -17,28 +17,68 @@ struct PlacesView: View {
     @State private var sort = PlaceSort.totalTime
 
     private var includedPlaces: [HistoryPlaceRecord] { places.filter { !$0.isExcluded } }
-    private var favorites: [HistoryPlaceRecord] {
-        includedPlaces.filter(\.isFavorite).sorted { $0.totalDuration > $1.totalDuration }
+    private var visitSnapshots: [PlaceVisitPresentationSnapshot] {
+        visits.map {
+            PlaceVisitPresentationSnapshot(
+                placeID: $0.placeID,
+                arrivalDate: $0.arrivalDate,
+                departureDate: $0.departureDate,
+                timeZoneIdentifier: $0.timeZoneIdentifier,
+                isExcluded: $0.isExcluded
+            )
+        }
     }
-    private var frequent: [HistoryPlaceRecord] {
-        includedPlaces.filter(isFrequent).sorted { $0.totalDuration > $1.totalDuration }
+    private var hasSearchQuery: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-    private var allPlaces: [HistoryPlaceRecord] {
+    private func favorites(using metrics: [UUID: PlaceDisplayMetrics]) -> [HistoryPlaceRecord] {
+        includedPlaces.filter(\.isFavorite).sorted {
+            let leftDuration = metrics[$0.id, default: .zero].totalDuration
+            let rightDuration = metrics[$1.id, default: .zero].totalDuration
+            return leftDuration == rightDuration
+                ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                : leftDuration > rightDuration
+        }
+    }
+    private func frequent(using metrics: [UUID: PlaceDisplayMetrics]) -> [HistoryPlaceRecord] {
+        includedPlaces.filter { isFrequent($0, using: metrics) }.sorted {
+            let leftDuration = metrics[$0.id, default: .zero].totalDuration
+            let rightDuration = metrics[$1.id, default: .zero].totalDuration
+            return leftDuration == rightDuration
+                ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                : leftDuration > rightDuration
+        }
+    }
+    private func allPlaces(using metrics: [UUID: PlaceDisplayMetrics]) -> [HistoryPlaceRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searched = includedPlaces.filter {
-            searchText.isEmpty
-                || $0.name.localizedStandardContains(searchText)
-                || ($0.category?.localizedStandardContains(searchText) ?? false)
+            query.isEmpty
+                || $0.name.localizedStandardContains(query)
+                || ($0.category?.localizedStandardContains(query) ?? false)
         }
         return searched.sorted { left, right in
+            let leftMetrics = metrics[left.id, default: .zero]
+            let rightMetrics = metrics[right.id, default: .zero]
             switch sort {
-            case .totalTime: left.totalDuration == right.totalDuration
-                ? left.name.localizedStandardCompare(right.name) == .orderedAscending
-                : left.totalDuration > right.totalDuration
-            case .recent: (left.lastVisitAt ?? .distantPast) > (right.lastVisitAt ?? .distantPast)
-            case .visits: left.visitCount == right.visitCount
-                ? left.totalDuration > right.totalDuration
-                : left.visitCount > right.visitCount
-            case .name: left.name.localizedStandardCompare(right.name) == .orderedAscending
+            case .totalTime:
+                return leftMetrics.totalDuration == rightMetrics.totalDuration
+                    ? left.name.localizedStandardCompare(right.name) == .orderedAscending
+                    : leftMetrics.totalDuration > rightMetrics.totalDuration
+            case .recent:
+                let leftDate = left.lastVisitAt ?? .distantPast
+                let rightDate = right.lastVisitAt ?? .distantPast
+                return leftDate == rightDate
+                    ? left.name.localizedStandardCompare(right.name) == .orderedAscending
+                    : leftDate > rightDate
+            case .visits:
+                if leftMetrics.visitCount != rightMetrics.visitCount {
+                    return leftMetrics.visitCount > rightMetrics.visitCount
+                }
+                return leftMetrics.totalDuration == rightMetrics.totalDuration
+                    ? left.name.localizedStandardCompare(right.name) == .orderedAscending
+                    : leftMetrics.totalDuration > rightMetrics.totalDuration
+            case .name:
+                return left.name.localizedStandardCompare(right.name) == .orderedAscending
             }
         }
     }
@@ -51,22 +91,35 @@ struct PlacesView: View {
     }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let metrics = PlacePresentation.metrics(visits: visitSnapshots, now: context.date)
+            placesList(metrics: metrics, now: context.date)
+        }
+    }
+
+    private func placesList(metrics: [UUID: PlaceDisplayMetrics], now: Date) -> some View {
         List {
-            if let currentVisit {
+            if !hasSearchQuery, let currentVisit {
                 Section("Now") {
-                    CurrentPlaceCard(place: currentPlace, visit: currentVisit)
+                    CurrentPlaceCard(place: currentPlace, visit: currentVisit, now: now)
                 }
             }
 
-            if !favorites.isEmpty {
+            let favoritePlaces = favorites(using: metrics)
+            if !hasSearchQuery, !favoritePlaces.isEmpty {
                 Section("Favorites") {
-                    ForEach(favorites) { placeRow($0) }
+                    ForEach(favoritePlaces.prefix(5)) { place in
+                        placeRow(place, metrics: metrics[place.id, default: .zero])
+                    }
                 }
             }
 
-            if !frequent.isEmpty {
+            let frequentPlaces = frequent(using: metrics)
+            if !hasSearchQuery, !frequentPlaces.isEmpty {
                 Section {
-                    ForEach(frequent) { placeRow($0) }
+                    ForEach(frequentPlaces.prefix(5)) { place in
+                        placeRow(place, metrics: metrics[place.id, default: .zero])
+                    }
                 } header: {
                     Text("Frequent Places")
                 } footer: {
@@ -74,11 +127,22 @@ struct PlacesView: View {
                 }
             }
 
-            Section("All Places") {
-                if allPlaces.isEmpty {
-                    ContentUnavailableView.search(text: searchText)
+            let displayedPlaces = allPlaces(using: metrics)
+            Section(hasSearchQuery ? "Results" : "All Places") {
+                if displayedPlaces.isEmpty {
+                    if hasSearchQuery {
+                        ContentUnavailableView.search(text: searchText)
+                    } else {
+                        ContentUnavailableView(
+                            "No Places Yet",
+                            systemImage: "mappin.slash",
+                            description: Text("Places will appear after Locki detects a stay.")
+                        )
+                    }
                 } else {
-                    ForEach(allPlaces) { placeRow($0) }
+                    ForEach(displayedPlaces) { place in
+                        placeRow(place, metrics: metrics[place.id, default: .zero])
+                    }
                 }
             }
         }
@@ -96,13 +160,17 @@ struct PlacesView: View {
         }
     }
 
-    private func isFrequent(_ place: HistoryPlaceRecord) -> Bool {
-        place.visitCount >= FrequentPlaceRanker.minimumVisitCount
-            && place.distinctDayCount >= FrequentPlaceRanker.minimumDistinctDayCount
-            && place.totalDuration >= FrequentPlaceRanker.minimumDuration
+    private func isFrequent(
+        _ place: HistoryPlaceRecord,
+        using metrics: [UUID: PlaceDisplayMetrics]
+    ) -> Bool {
+        let placeMetrics = metrics[place.id, default: .zero]
+        return placeMetrics.visitCount >= FrequentPlaceRanker.minimumVisitCount
+            && placeMetrics.distinctDayCount >= FrequentPlaceRanker.minimumDistinctDayCount
+            && placeMetrics.totalDuration >= FrequentPlaceRanker.minimumDuration
     }
 
-    private func placeRow(_ place: HistoryPlaceRecord) -> some View {
+    private func placeRow(_ place: HistoryPlaceRecord, metrics: PlaceDisplayMetrics) -> some View {
         NavigationLink {
             PlaceDetailView(place: place, historyModel: historyModel)
         } label: {
@@ -116,17 +184,19 @@ struct PlacesView: View {
                                 .accessibilityHidden(true)
                         }
                     }
-                    Text("\(place.visitCount) visits · \(place.distinctDayCount) days")
+                    Text(metrics.countSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(place.totalDuration.formattedDuration)
+                Text(metrics.totalDuration.formattedDuration)
                     .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(place.name)
-            .accessibilityValue("\(place.totalDuration.formattedDuration), \(place.visitCount) visits, \(place.distinctDayCount) days\(place.isFavorite ? ", favorite" : "")")
+            .accessibilityValue(
+                "\(metrics.totalDuration.formattedDuration), \(metrics.countSummary)\(place.isFavorite ? ", favorite" : "")"
+            )
         }
     }
 }
@@ -134,25 +204,24 @@ struct PlacesView: View {
 struct CurrentPlaceCard: View {
     let place: HistoryPlaceRecord?
     let visit: HistoryVisitRecord
+    let now: Date
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            Label {
-                VStack(alignment: .leading) {
-                    Text("At \(place?.name ?? "Unrecognized place")")
-                        .font(.headline)
-                    Text(max(context.date.timeIntervalSince(visit.arrivalDate), 0).formattedDuration)
-                        .font(.title2.weight(.semibold))
-                        .monospacedDigit()
-                }
-            } icon: {
-                Image(systemName: "location.fill")
-                    .foregroundStyle(.blue)
+        Label {
+            VStack(alignment: .leading) {
+                Text("At \(place?.name ?? "Unrecognized place")")
+                    .font(.headline)
+                Text(max(now.timeIntervalSince(visit.arrivalDate), 0).formattedDuration)
+                    .font(.title2.weight(.semibold))
+                    .monospacedDigit()
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Currently at \(place?.name ?? "an unrecognized place")")
-            .accessibilityValue(max(context.date.timeIntervalSince(visit.arrivalDate), 0).formattedDuration)
+        } icon: {
+            Image(systemName: "location.fill")
+                .foregroundStyle(.blue)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Currently at \(place?.name ?? "an unrecognized place")")
+        .accessibilityValue(max(now.timeIntervalSince(visit.arrivalDate), 0).formattedDuration)
     }
 }
 

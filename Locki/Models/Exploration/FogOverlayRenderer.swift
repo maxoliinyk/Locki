@@ -13,16 +13,94 @@ nonisolated final class WorldFogOverlay: NSObject, MKOverlay {
     let boundingMapRect = MKMapRect.world
 }
 
+nonisolated enum FogInterfaceStyle: CaseIterable, Equatable, Sendable {
+    case light
+    case dark
+}
+
+nonisolated struct FogColorComponents: Equatable, Sendable {
+    let red: CGFloat
+    let green: CGFloat
+    let blue: CGFloat
+    let alpha: CGFloat
+
+    var relativeLuminance: CGFloat {
+        0.2126 * red + 0.7152 * green + 0.0722 * blue
+    }
+
+    var uiColor: UIColor {
+        UIColor(red: red, green: green, blue: blue, alpha: alpha)
+    }
+}
+
+nonisolated struct FogPalette: Equatable, Sendable {
+    let base: FogColorComponents
+    let highlight: FogColorComponents
+}
+
 nonisolated struct FogRenderStyle: Equatable {
     let mapStyle: LockiMapStyle
+    let interfaceStyle: FogInterfaceStyle
     let reduceTransparency: Bool
     let increasedContrast: Bool
+
+    var palette: FogPalette {
+        let contrastBoost: CGFloat = increasedContrast ? (interfaceStyle == .dark ? 0.06 : 0.1) : 0
+        let base: FogColorComponents
+        let highlightAlpha: CGFloat
+
+        switch (mapStyle, interfaceStyle) {
+        case (.standard, .light):
+            base = FogColorComponents(
+                red: 0.58,
+                green: 0.66,
+                blue: 0.64,
+                alpha: reduceTransparency ? 0.94 : 0.76
+            )
+            highlightAlpha = 0.035
+        case (.standard, .dark):
+            base = FogColorComponents(
+                red: 0.18,
+                green: 0.23,
+                blue: 0.22,
+                alpha: reduceTransparency ? 0.96 : 0.86
+            )
+            highlightAlpha = 0.025
+        case (.imagery, .light):
+            base = FogColorComponents(
+                red: 0.34,
+                green: 0.39,
+                blue: 0.38,
+                alpha: reduceTransparency ? 0.96 : 0.82
+            )
+            highlightAlpha = 0.045
+        case (.imagery, .dark):
+            base = FogColorComponents(
+                red: 0.10,
+                green: 0.14,
+                blue: 0.13,
+                alpha: reduceTransparency ? 0.97 : 0.90
+            )
+            highlightAlpha = 0.03
+        }
+
+        return FogPalette(
+            base: FogColorComponents(
+                red: max(base.red - contrastBoost, 0),
+                green: max(base.green - contrastBoost, 0),
+                blue: max(base.blue - contrastBoost, 0),
+                alpha: base.alpha
+            ),
+            highlight: FogColorComponents(red: 1, green: 1, blue: 1, alpha: highlightAlpha)
+        )
+    }
 }
 
 nonisolated final class FogOverlayRenderer: MKOverlayRenderer {
     private var snapshot: CoverageSnapshot = .empty
     private var style = FogRenderStyle(
         mapStyle: .standard,
+        interfaceStyle: .light,
         reduceTransparency: false,
         increasedContrast: false
     )
@@ -48,9 +126,9 @@ nonisolated final class FogOverlayRenderer: MKOverlayRenderer {
         zoomScale: MKZoomScale,
         context: CGContext
     ) {
-        let palette = fogPalette
+        let palette = style.palette
         context.setBlendMode(.normal)
-        context.setFillColor(palette.base.cgColor)
+        context.setFillColor(palette.base.uiColor.cgColor)
         context.fill(drawRect)
 
         guard !style.reduceTransparency else { return }
@@ -74,7 +152,7 @@ nonisolated final class FogOverlayRenderer: MKOverlayRenderer {
                     width: width,
                     height: height
                 )
-                context.setFillColor(palette.highlight.cgColor)
+                context.setFillColor(palette.highlight.uiColor.cgColor)
                 context.fillEllipse(in: rect(for: cloudRect))
             }
         }
@@ -123,22 +201,6 @@ nonisolated final class FogOverlayRenderer: MKOverlayRenderer {
                 )
                 context.fillEllipse(in: revealRect)
             }
-        }
-    }
-
-    private var fogPalette: (base: UIColor, highlight: UIColor) {
-        let contrastBoost = style.increasedContrast ? 0.1 : 0
-        switch style.mapStyle {
-        case .standard:
-            return (
-                UIColor(red: 0.58 - contrastBoost, green: 0.66 - contrastBoost, blue: 0.64 - contrastBoost, alpha: style.reduceTransparency ? 0.94 : 0.76),
-                UIColor(white: 1, alpha: 0.035)
-            )
-        case .imagery:
-            return (
-                UIColor(red: 0.34 - contrastBoost, green: 0.39 - contrastBoost, blue: 0.38 - contrastBoost, alpha: style.reduceTransparency ? 0.96 : 0.82),
-                UIColor(white: 1, alpha: 0.045)
-            )
         }
     }
 

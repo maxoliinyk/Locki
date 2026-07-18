@@ -542,12 +542,6 @@ private struct TripDetailView: View {
     }
 }
 
-extension TimeInterval {
-    var formattedDuration: String {
-        Duration.seconds(self).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
-    }
-}
-
 extension Double {
     var formattedSpeed: String {
         Measurement(value: self, unit: UnitSpeed.metersPerSecond).formatted(.measurement(width: .abbreviated))

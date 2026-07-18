@@ -39,6 +39,42 @@ nonisolated struct HistoryDistanceFormatStyle: FormatStyle, Sendable {
     }
 }
 
+nonisolated struct HistoryDurationFormatStyle: FormatStyle, Sendable {
+    let locale: Locale
+
+    init(locale: Locale = .current) {
+        self.locale = locale
+    }
+
+    func format(_ value: TimeInterval) -> String {
+        let seconds = value.isFinite ? max(value, 0) : 0
+        let minuteValue = floor(seconds / 60)
+        let totalMinutes = minuteValue >= Double(Int.max) ? Int.max : Int(minuteValue)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        var components: [String] = []
+
+        if hours > 0 {
+            components.append(format(hours, unit: .hours))
+        }
+        if minutes > 0 || components.isEmpty {
+            components.append(format(minutes, unit: .minutes))
+        }
+        return components.joined(separator: " ")
+    }
+
+    private func format(_ value: Int, unit: UnitDuration) -> String {
+        Measurement(value: Double(value), unit: unit).formatted(
+            Measurement<UnitDuration>.FormatStyle(
+                width: .abbreviated,
+                locale: locale,
+                usage: .asProvided,
+                numberFormatStyle: .number.precision(.fractionLength(0))
+            )
+        )
+    }
+}
+
 nonisolated enum HistoryPeriod: String, CaseIterable, Hashable, Identifiable, Sendable {
     case day
     case week
@@ -173,5 +209,13 @@ extension Double {
 
     nonisolated func formattedDistance(locale: Locale) -> String {
         HistoryDistanceFormatStyle(locale: locale).format(self)
+    }
+
+    var formattedDuration: String {
+        HistoryDurationFormatStyle().format(self)
+    }
+
+    nonisolated func formattedDuration(locale: Locale) -> String {
+        HistoryDurationFormatStyle(locale: locale).format(self)
     }
 }

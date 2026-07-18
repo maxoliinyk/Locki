@@ -10,6 +10,7 @@ import SwiftUI
 
 struct LockiMap: UIViewRepresentable {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let viewModel: MapViewModel
@@ -42,6 +43,7 @@ struct LockiMap: UIViewRepresentable {
             snapshot: viewModel.coverageSnapshot,
             style: FogRenderStyle(
                 mapStyle: viewModel.mapStyle,
+                interfaceStyle: colorScheme == .dark ? .dark : .light,
                 reduceTransparency: reduceTransparency,
                 increasedContrast: colorSchemeContrast == .increased
             )
@@ -91,8 +93,9 @@ struct LockiMap: UIViewRepresentable {
                 snapshot: parent.viewModel.coverageSnapshot,
                 style: FogRenderStyle(
                     mapStyle: parent.viewModel.mapStyle,
-                    reduceTransparency: false,
-                    increasedContrast: false
+                    interfaceStyle: parent.colorScheme == .dark ? .dark : .light,
+                    reduceTransparency: parent.reduceTransparency,
+                    increasedContrast: parent.colorSchemeContrast == .increased
                 )
             )
             return renderer
