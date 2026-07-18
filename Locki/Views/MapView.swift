@@ -32,6 +32,7 @@ struct MapView: View {
     var body: some View {
         ZStack {
             LockiMap(viewModel: viewModel)
+                .ignoresSafeArea()
 
             VStack(alignment: .leading) {
                 if viewModel.showsLocationOnboarding {
