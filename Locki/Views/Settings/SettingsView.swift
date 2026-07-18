@@ -619,6 +619,22 @@ private struct AboutSettingsView: View {
                 }
             }
 
+            Section {
+                if let url = URL(string: "https://www.geoboundaries.org/") {
+                    Link("Country boundaries — geoBoundaries", destination: url)
+                }
+                if let url = URL(string: "https://human-settlement.emergency.copernicus.eu/ucdb2024Overview.php") {
+                    Link("Urban centres — European Commission GHSL", destination: url)
+                }
+                if let url = URL(string: "https://unstats.un.org/unsd/methodology/m49/") {
+                    Link("Regions — United Nations M49", destination: url)
+                }
+            } header: {
+                Text("Geography Data")
+            } footer: {
+                Text("Country boundaries and GHSL urban centres are available under CC BY 4.0. Classification runs entirely on this device.")
+            }
+
             Section("App") {
                 LabeledContent("Version", value: version)
                 LabeledContent("Build", value: build)
