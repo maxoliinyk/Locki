@@ -15,6 +15,7 @@ final class AppRuntime {
     let locationTracking: LocationTrackingService
     let mapViewModel: MapViewModel
     let historyModel: HistoryModel
+    let backupModel: BackupModel
     let motionService: MotionActivityService
     let placeMonitor: PlaceMonitorService
     let backgroundRefresh: BackgroundRefreshCoordinator
@@ -29,11 +30,17 @@ final class AppRuntime {
         let locationTracking = LocationTrackingService()
         self.locationTracking = locationTracking
         mapViewModel = MapViewModel(locationTracking: locationTracking)
-        historyModel = HistoryModel()
+        let historyModel = HistoryModel()
+        self.historyModel = historyModel
         motionService = MotionActivityService()
         placeMonitor = PlaceMonitorService()
         backgroundRefresh = BackgroundRefreshCoordinator()
         trackingHealth = TrackingHealthModel()
+        backupModel = BackupModel(
+            store: BackupStore(modelContainer: modelContainer),
+            historyModel: historyModel,
+            mapViewModel: mapViewModel
+        )
     }
 
     func start(launchedForLocation: Bool) {

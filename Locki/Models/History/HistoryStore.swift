@@ -35,6 +35,12 @@ actor HistoryStore {
         return try overview()
     }
 
+    func flush() throws {
+        if modelContext.hasChanges {
+            try modelContext.save()
+        }
+    }
+
     func setEnabled(_ enabled: Bool, at date: Date = .now) throws -> HistoryOverview {
         let metadata = try metadata()
         if enabled {

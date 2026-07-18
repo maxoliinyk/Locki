@@ -83,6 +83,24 @@ nonisolated struct HistoryPoint: Codable, Hashable, Sendable {
     let courseFiveDegrees: UInt8?
     let timeZoneIdentifier: String
 
+    init(
+        latitudeE5: Int32,
+        longitudeE5: Int32,
+        timestampSeconds: Int64,
+        accuracyBucketMeters: UInt8,
+        speedHalfMetersPerSecond: UInt16?,
+        courseFiveDegrees: UInt8?,
+        timeZoneIdentifier: String
+    ) {
+        self.latitudeE5 = latitudeE5
+        self.longitudeE5 = longitudeE5
+        self.timestampSeconds = timestampSeconds
+        self.accuracyBucketMeters = accuracyBucketMeters
+        self.speedHalfMetersPerSecond = speedHalfMetersPerSecond
+        self.courseFiveDegrees = courseFiveDegrees
+        self.timeZoneIdentifier = timeZoneIdentifier
+    }
+
     init(sample: HistoryLocationSample) {
         latitudeE5 = Int32((sample.coordinate.latitude * 100_000).rounded())
         longitudeE5 = Int32((sample.coordinate.longitude * 100_000).rounded())

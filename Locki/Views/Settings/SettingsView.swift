@@ -9,10 +9,12 @@ import CoreLocation
 import CoreMotion
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Bindable var viewModel: MapViewModel
     @Bindable var historyModel: HistoryModel
+    @Bindable var backupModel: BackupModel
     let motionService: MotionActivityService
 
     private var readiness: SettingsReadiness {
@@ -133,7 +135,11 @@ struct SettingsView: View {
             }
 
             NavigationLink {
-                DataSettingsView(viewModel: viewModel, historyModel: historyModel)
+                DataSettingsView(
+                    viewModel: viewModel,
+                    historyModel: historyModel,
+                    backupModel: backupModel
+                )
             } label: {
                 SettingsDestinationLabel(
                     title: "Data",
@@ -405,9 +411,12 @@ private struct LocationSettingsView: View {
 private struct DataSettingsView: View {
     @Bindable var viewModel: MapViewModel
     @Bindable var historyModel: HistoryModel
+    @Bindable var backupModel: BackupModel
     @State private var confirmsHistoryDeletion = false
     @State private var confirmsCoverageDeletion = false
     @State private var confirmsAllDeletion = false
+    @State private var showsBackupImporter = false
+    @State private var confirmsBackupImport = false
 
     var body: some View {
         List {
@@ -434,8 +443,32 @@ private struct DataSettingsView: View {
             }
 
             Section("Backup") {
-                Label("Local backup and restore", systemImage: "externaldrive.badge.timemachine")
-                Text("Full backup and import controls are being added next. iCloud support will be available in the future.")
+                Button("Create Full Backup", systemImage: "externaldrive.badge.plus") {
+                    Task { await backupModel.prepareBackup() }
+                }
+                .disabled(backupModel.isExporting || backupModel.isImporting)
+
+                if backupModel.isExporting {
+                    ProgressView("Creating backup")
+                } else if let backupURL = backupModel.backupURL {
+                    ShareLink(item: backupURL) {
+                        Label("Share Backup", systemImage: "square.and.arrow.up")
+                    }
+                    Button("Remove Prepared Backup", systemImage: "xmark") {
+                        backupModel.removeBackupFile()
+                    }
+                }
+
+                Button("Import Backup", systemImage: "square.and.arrow.down") {
+                    showsBackupImporter = true
+                }
+                .disabled(backupModel.isExporting || backupModel.isImporting)
+
+                if backupModel.isImporting {
+                    ProgressView("Importing backup")
+                }
+
+                Text("Import merges missing history and coverage. Existing local edits are kept. iCloud support will be available in the future.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -457,6 +490,64 @@ private struct DataSettingsView: View {
         }
         .navigationTitle("Data")
         .navigationBarTitleDisplayMode(.inline)
+        .fileImporter(
+            isPresented: $showsBackupImporter,
+            allowedContentTypes: [.lockiBackup],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    backupModel.prepareImport(from: url)
+                    confirmsBackupImport = backupModel.pendingPreview != nil
+                }
+            case .failure(let error):
+                backupModel.report(error)
+            }
+        }
+        .confirmationDialog(
+            "Import this Locki backup?",
+            isPresented: $confirmsBackupImport,
+            titleVisibility: .visible,
+            presenting: backupModel.pendingPreview
+        ) { _ in
+            Button("Import and Merge") {
+                Task { await backupModel.confirmImport() }
+            }
+            Button("Cancel", role: .cancel) { backupModel.cancelImport() }
+        } message: { preview in
+            Text(
+                "Created \(preview.exportedAt.formatted(date: .abbreviated, time: .shortened)). "
+                    + "Contains \(preview.placeCount) places, \(preview.tripCount) trips, "
+                    + "\(preview.visitCount) visits, and \(preview.coverageChunkCount) coverage chunks."
+            )
+        }
+        .alert(
+            "Import Complete",
+            isPresented: Binding(
+                get: { backupModel.lastImportResult != nil },
+                set: { if !$0 { backupModel.clearResult() } }
+            ),
+            presenting: backupModel.lastImportResult
+        ) { _ in
+            Button("OK") { backupModel.clearResult() }
+        } message: { result in
+            Text(
+                "Added \(result.insertedRecordCount) history records and "
+                    + "\(result.mergedCoverageCells) explored cells. Existing data was kept."
+            )
+        }
+        .alert(
+            "Backup Error",
+            isPresented: Binding(
+                get: { backupModel.errorMessage != nil },
+                set: { if !$0 { backupModel.clearResult() } }
+            )
+        ) {
+            Button("OK") { backupModel.clearResult() }
+        } message: {
+            Text(backupModel.errorMessage ?? "The backup operation could not be completed.")
+        }
         .confirmationDialog(
             "Delete all location history?",
             isPresented: $confirmsHistoryDeletion,
@@ -574,14 +665,4 @@ private struct HistoryRangeDeletionView: View {
 private func openSettings() {
     guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
     UIApplication.shared.open(url)
-}
-
-#Preview {
-    @Previewable @State var viewModel = MapViewModel()
-    @Previewable @State var historyModel = HistoryModel()
-    SettingsView(
-        viewModel: viewModel,
-        historyModel: historyModel,
-        motionService: MotionActivityService()
-    )
 }

@@ -14,10 +14,18 @@ import UIKit
 @MainActor
 struct SettingsViewTests {
     @Test("Minimal settings hub renders")
-    func settingsHubRenders() {
+    func settingsHubRenders() throws {
+        let container = try LockiPersistence.makeContainer(inMemory: true)
+        let viewModel = MapViewModel()
+        let historyModel = HistoryModel()
         let settings = SettingsView(
-            viewModel: MapViewModel(),
-            historyModel: HistoryModel(),
+            viewModel: viewModel,
+            historyModel: historyModel,
+            backupModel: BackupModel(
+                store: BackupStore(modelContainer: container),
+                historyModel: historyModel,
+                mapViewModel: viewModel
+            ),
             motionService: MotionActivityService()
         )
         .frame(width: 390, height: 844)

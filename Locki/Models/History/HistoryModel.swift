@@ -38,6 +38,7 @@ final class HistoryModel {
     @ObservationIgnored private var placeMonitor: (any PlaceMonitoring)?
     @ObservationIgnored private var backgroundRefresh: (any BackgroundRefreshScheduling)?
     @ObservationIgnored private var trackingHealth: TrackingHealthModel?
+    @ObservationIgnored private var isBackupImportPaused = false
 
     private static let historyEnabledKey = "history.enabled"
 
@@ -84,6 +85,7 @@ final class HistoryModel {
         ingestionTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { break }
+                guard !isBackupImportPaused else { continue }
                 do {
                     overview = try await store.ingest(event)
                     persistenceIssue = false
@@ -150,6 +152,35 @@ final class HistoryModel {
         } catch {
             persistenceIssue = true
         }
+    }
+
+    func flushForBackup() async throws {
+        try await store?.flush()
+    }
+
+    func pauseForBackupImport() async {
+        isBackupImportPaused = true
+        stopDwellChecks()
+        monitorRefreshTask?.cancel()
+        monitorRefreshTask = nil
+        opportunisticFixTask?.cancel()
+        opportunisticFixTask = nil
+        locationTracking?.setHistoryTrackingEnabled(false)
+        motionService?.stop()
+        backgroundRefresh?.cancel()
+        await placeMonitor?.removeAll()
+        try? await store?.flush()
+    }
+
+    func resumeAfterBackupImport() async {
+        isBackupImportPaused = false
+        await refresh()
+        guard isEnabled else { return }
+        locationTracking?.setHistoryTrackingEnabled(true)
+        motionService?.start()
+        backgroundRefresh?.schedule()
+        startDwellChecks()
+        scheduleMonitorRefresh()
     }
 
     func checkCurrentStay() {

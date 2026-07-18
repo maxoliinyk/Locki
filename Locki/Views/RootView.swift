@@ -40,6 +40,7 @@ struct RootView: View {
                 SettingsView(
                     viewModel: mapViewModel,
                     historyModel: historyModel,
+                    backupModel: runtime.backupModel,
                     motionService: runtime.motionService
                 )
             }

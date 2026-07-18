@@ -238,6 +238,32 @@ final class MapViewModel {
         Task { await flushPendingCoverage() }
     }
 
+    func flushCoverageForBackup() async {
+        await flushPendingCoverage()
+    }
+
+    func pauseForBackupImport() async {
+        locationTracking.setApplicationIsActive(false)
+        await flushPendingCoverage()
+    }
+
+    func resumeAfterBackupImport() async {
+        guard let coverageStore else {
+            locationTracking.setApplicationIsActive(true)
+            return
+        }
+        do {
+            coverageSnapshot = try await coverageStore.snapshot()
+            let summary = try await coverageStore.summary()
+            matchedPathCount = summary.matchedPathCount
+            pendingPathAnchorCount = try await coverageStore.pendingPathAnchors().count
+            persistenceIssue = false
+        } catch {
+            persistenceIssue = true
+        }
+        locationTracking.setApplicationIsActive(true)
+    }
+
     func processPendingPathMatches(deadline: Date? = nil) async -> PathProcessingResult {
         guard let pathMatchingCoordinator else { return .idle }
         return await pathMatchingCoordinator.processPending(deadline: deadline)
